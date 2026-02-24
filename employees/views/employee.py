@@ -47,6 +47,25 @@ def get_all_employees_with_images(request):
         fs_hr = gridfs.GridFS(client[hr_db_name])
         fs_global = gridfs.GridFS(client[global_db_name])
 
+        # Department Filtering
+        department = request.query_params.get('department')
+        employees = Employee.objects.all().order_by("employee_id")
+
+        if department and department != 'All':
+            db = client[global_db_name]
+            # Resolve department name to code if needed, or query by name/code
+            # Try finding department code first
+            dept_doc = db['backend_diagnostics_Departments'].find_one({"department_name": department})
+            dept_code = dept_doc.get("department_code") if dept_doc else department
+            
+            # Find employees in this department
+            # Searching both by department code and name just in case
+            query = {"$or": [{"department": dept_code}, {"department": department}]}
+            dept_profiles = list(db['backend_diagnostics_profile'].find(query, {"employeeId": 1}))
+            dept_emp_ids = [str(p["employeeId"]) for p in dept_profiles]
+            
+            employees = employees.filter(employee_id__in=dept_emp_ids)
+
         # 3️⃣ Build response list
         employee_list = []
         for emp in employees:
@@ -172,7 +191,19 @@ def get_all_employee_from_global(request):
         designations_col = db['backend_diagnostics_Designation']
 
         # ✅ Fetch all employees from Global DB
-        global_employees = list(profiles_col.find())
+        query = {}
+        department_filter = request.query_params.get('department')
+        
+        if department_filter and department_filter != 'All':
+            # Resolve department name to code
+            dept_doc = departments_col.find_one({"department_name": department_filter})
+            if dept_doc:
+                query['department'] = dept_doc.get("department_code")
+            else:
+                 # Try using as code directly or name if no code found
+                 query['department'] = department_filter
+
+        global_employees = list(profiles_col.find(query))
 
         # ✅ Create department & designation lookup maps
         dept_map = {
@@ -263,7 +294,10 @@ def register_employee(request):
     image_md5 = compute_md5(image_file)
 
     # ✅ Convert image to face encoding
-    encoding = imagefile_to_encoding(image_file)
+    encoding, is_real = imagefile_to_encoding(image_file)
+    if not is_real:
+        return JsonResponse({"error": "Spoofing attempt detected. Registration failed."}, status=400)
+
     if not encoding:
         return JsonResponse({"error": "No face detected in uploaded image"}, status=400)
 
@@ -341,7 +375,10 @@ def encode_employee_face(request, employee_id):
         # ✅ Compute MD5 for fetched image
         image_md5 = hashlib.md5(resp.content).hexdigest()
 
-        encoding = imagefile_to_encoding(img_bytes)
+        encoding, is_real = imagefile_to_encoding(img_bytes)
+        if not is_real:
+            return JsonResponse({"error": "Spoofing attempt detected. Encoding failed."}, status=400)
+
         if not encoding:
             return JsonResponse({"error": "No face detected in image"}, status=422)
 
