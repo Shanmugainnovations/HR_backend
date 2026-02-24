@@ -34,12 +34,16 @@ def get_device_info(request):
     return JsonResponse(device_details)
 
 
+from pymongo import MongoClient
+
 @api_view(['GET', 'POST', 'PUT'])
 @csrf_exempt
 def registration(request):
     if request.method == 'POST':
         # Handle Registration
         name = request.data.get('name')
+        employee_id = request.data.get('employee_id') # New Field
+        department = request.data.get('department') # New Field
         role = request.data.get('role')
         password = request.data.get('password')
         confirm_password = request.data.get('confirmPassword')
@@ -50,13 +54,18 @@ def registration(request):
         if password != confirm_password:
             return Response({"error": "Passwords do not match"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Check for duplicates
-        if Register.objects.filter(name=name, role=role).exists():
-            return Response({"error": "User with this name and role already exists"}, status=status.HTTP_400_BAD_REQUEST)
+        # Check for duplicates (Name or Employee ID)
+        if Register.objects.filter(name=name).exists():
+             return Response({"error": "User with this name already exists"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if employee_id and Register.objects.filter(employee_id=employee_id).exists():
+             return Response({"error": "User with this Employee ID already exists"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create new record including fingerprint_id and device
+        # Create new record
         Register.objects.create(
             name=name,
+            employee_id=employee_id,
+            department=department,
             role=role,
             password=password,
             confirmPassword=confirm_password,
@@ -71,32 +80,75 @@ def registration(request):
 @permission_classes([AllowAny])
 def login(request):
     name = request.data.get('name')
+    employee_id = request.data.get('employee_id')
     password = request.data.get('password')
+
     try:
-        user = Register.objects.get(name=name)
+        # Check if login by employee_id (preferred) or name
+        user = None
+        if employee_id:
+            user = Register.objects.filter(employee_id=employee_id).first()
+        
+        if not user and name:
+            user = Register.objects.filter(name=name).first()
+            
+        if not user:
+                return Response({"error": "User not found"}, status=404)
 
         if user.password != password:
             return Response({"error": "Invalid password"}, status=401)
 
-        device_name = user.device
-        token_env_key = f"{device_name}_TOKEN"  # e.g., LAB_MAC_01_TOKEN
-        token = os.getenv(token_env_key)
+        # Fetch Department
+        department = user.department if user.department else "Unassigned"
+        
+        # Fallback to MongoDB if department not set in Register model
+        if department == "Unassigned":
+            try:
+                mongo_uri = os.getenv("GLOBAL_DB_HOST")
+                db_name = os.getenv("GLOBAL_DB_NAME", "Global")
+                client = MongoClient(mongo_uri)
+                db = client[db_name]
+                
+                # If user has employee_id linked
+                search_id = user.employee_id or user.name
 
-        if not token:
-            return Response({
-                "error": f"No token found for device {device_name}. Please check environment settings."
-            }, status=403)
+                profile = None
+                if user.employee_id:
+                    profile = db['backend_diagnostics_profile'].find_one({"employeeId": user.employee_id})
+                
+                if not profile: # Try name if ID not found or not provided
+                    profile = db['backend_diagnostics_profile'].find_one({"employeeId": search_id})
+
+                if profile:
+                    dept_code = profile.get("department")
+                    # Resolve Department Code
+                    dept_doc = db['backend_diagnostics_Departments'].find_one({"department_code": dept_code})
+                    if dept_doc:
+                        department = dept_doc.get("department_name", dept_code)
+                    else:
+                        department = dept_code
+            except Exception as e:
+                print(f"Error fetching department: {e}")
+
+        # Construct Token (Legacy logic for device based token kept for compatibility)
+        token = "dummy-token-for-web-user"
+        if user.device:
+            device_name = user.device
+            token_env_key = f"{device_name}_TOKEN"
+            token = os.getenv(token_env_key) or token
 
         return Response({
-            "message": f"Login successful as {user.role}, {user.name}",
-            "device": device_name,
+            "message": f"Login successful as {user.role}",
+            "device": user.device,
             "name": user.name,
+            "employee_id": user.employee_id,
             "role": user.role,
+            "department": department,
             "token": token
         }, status=200)
 
-    except Register.DoesNotExist:
-        return Response({"error": "User not found"}, status=404)
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
 
 
 @api_view(['POST'])

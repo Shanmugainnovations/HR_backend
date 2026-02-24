@@ -74,4 +74,48 @@ class Register(models.Model):
     password = models.CharField(max_length=500)
     confirmPassword = models.CharField(max_length=500)
     fingerprint_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    employee_id = models.CharField(max_length=50, null=True, blank=True)
+    department = models.CharField(max_length=100, null=True, blank=True)
     device = models.CharField(max_length=255, unique=True, null=True, blank=True)
+
+class SpoofingAttempt(models.Model):
+    employee_id = models.CharField(max_length=50, null=True, blank=True)
+    image = models.TextField()  # Storing as base64 string
+    timestamp = models.DateTimeField(auto_now_add=True)
+    device_id = models.CharField(max_length=50, blank=True, null=True)
+
+    def __str__(self):
+        return f"Spoofing Attempt @ {self.timestamp}"    
+
+class Shift(models.Model):
+    name = models.CharField(max_length=50, unique=True)  # e.g., 'A', 'B', 'General'
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    is_active = models.BooleanField(default=True)
+
+
+    def __str__(self):
+        return f"{self.name} ({self.start_time} - {self.end_time})"
+
+class Department(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    shifts = models.ManyToManyField(Shift, related_name='departments', blank=True)
+
+
+    def __str__(self):
+        return self.name
+
+class EmployeeShiftSchedule(models.Model):
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='shift_schedules')
+    shift = models.ForeignKey(Shift, on_delete=models.CASCADE)
+    date = models.DateField()
+    
+    class Meta:
+        unique_together = ('employee', 'date')
+        indexes = [
+            models.Index(fields=['employee', 'date']),
+            models.Index(fields=['date']),
+        ]
+
+    def __str__(self):
+        return f"{self.employee.name} - {self.date} - {self.shift.name}"

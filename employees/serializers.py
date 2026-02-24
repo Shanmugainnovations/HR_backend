@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import Employee
-from .models import EmployeeAttendance, Register
+from .models import EmployeeAttendance, Register, Shift, Department, EmployeeShiftSchedule
 from drf_extra_fields.fields import Base64ImageField
 from bson import ObjectId
 
@@ -47,7 +47,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Register
-        fields = ['name', 'role', 'password', 'confirmPassword']
+        fields = ['name', 'role', 'password', 'confirmPassword', 'employee_id', 'department', 'device', 'fingerprint_id']
         extra_kwargs = {'password': {'write_only': True}}
 
     def validate(self, data):
@@ -56,5 +56,31 @@ class RegisterSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
-        validated_data.pop('confirmPassword')  # Remove confirmPassword before saving
+        if 'confirmPassword' in validated_data:
+            validated_data.pop('confirmPassword')
         return Register.objects.create(**validated_data)
+
+class ShiftSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Shift
+        fields = '__all__'
+
+class DepartmentSerializer(serializers.ModelSerializer):
+    shifts = ShiftSerializer(many=True, read_only=True)
+    shift_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Shift.objects.all(), source='shifts', many=True, write_only=True, required=False
+    )
+
+    class Meta:
+        model = Department
+        fields = ['id', 'name', 'shifts', 'shift_ids']
+
+class EmployeeShiftScheduleSerializer(serializers.ModelSerializer):
+    employee_name = serializers.CharField(source='employee.name', read_only=True)
+    shift_name = serializers.CharField(source='shift.name', read_only=True)
+    start_time = serializers.TimeField(source='shift.start_time', read_only=True)
+    end_time = serializers.TimeField(source='shift.end_time', read_only=True)
+
+    class Meta:
+        model = EmployeeShiftSchedule
+        fields = ['id', 'employee', 'employee_name', 'shift', 'shift_name', 'start_time', 'end_time', 'date']

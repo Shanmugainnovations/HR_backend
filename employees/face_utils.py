@@ -27,14 +27,28 @@ def check_liveness(img_rgb):
         img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
         
         # Run Anti-Spoofing
+        # Use 'ssd' instead of 'opencv' for better face cropping/detection
         # enforce_detection=False allows silent return if no face (though we handle it)
-        faces = DeepFace.extract_faces(
-            img_path=img_bgr,
-            detector_backend='opencv', 
-            enforce_detection=False,
-            align=False,
-            anti_spoofing=True
-        )
+        try:
+            detector = 'ssd' 
+            faces = DeepFace.extract_faces(
+                img_path=img_bgr,
+                detector_backend=detector, 
+                enforce_detection=False,
+                align=False,
+                anti_spoofing=True
+            )
+        except Exception as e:
+            # Fallback to opencv if ssd fails (e.g. weights missing/download error)
+            print(f"⚠️ DeepFace SSD backend failed, falling back to opencv: {e}")
+            detector = 'opencv'
+            faces = DeepFace.extract_faces(
+                img_path=img_bgr,
+                detector_backend=detector, 
+                enforce_detection=False,
+                align=False,
+                anti_spoofing=True
+            )
         
         if not faces:
             # If DeepFace sees no face, we can't judge liveness.
@@ -43,7 +57,17 @@ def check_liveness(img_rgb):
             
         for face in faces:
             # 'is_real' is populated by anti_spoofing=True
-            if face.get("is_real") is False:
+            is_real = face.get("is_real")
+            score = face.get("antispoof_score", None)
+            
+            print(f"🕵️ DEBUG: Anti-spoof check | Backend: {detector} | Is Real: {is_real} | Score: {score}")
+
+            if is_real is False:
+                # If Score > 0.65, we override the strict default (often 0.75+)
+                if score is not None and score > 0.65:
+                    print(f"⚠️ Overriding Spoof detection: Score {score} > 0.65. marked as REAL.")
+                    continue
+
                 # Found a spoofed face
                 return False
                 
@@ -58,10 +82,10 @@ def check_liveness(img_rgb):
         return False
 
 
-def imagefile_to_encoding(file_obj) -> list:
+def imagefile_to_encoding(file_obj) -> tuple:
     """
-    Accepts an image file object (InMemoryUploadedFile or bytes) and returns an encoding (list)
-    Returns [] if no face is found.
+    Accepts an image file object (InMemoryUploadedFile or bytes) and returns (encoding, is_real).
+    Returns ([], is_real) if no face is found.
     """
     try:
         if isinstance(file_obj, (bytes, bytearray)):
@@ -70,21 +94,21 @@ def imagefile_to_encoding(file_obj) -> list:
             img = face_recognition.load_image_file(file_obj)
 
         # ✅ Anti-Spoofing Check
-        if not check_liveness(img):
-            print("⚠️ Spoofing attempt detected!")
-            raise SpoofingDetectedError("Spoofing attempt detected")
+        is_real = check_liveness(img)
+        if not is_real:
+            print("⚠️ Spoofing attempt detected (flagged)!")
 
         encodings = face_recognition.face_encodings(img)
         if not encodings:
-            return []  # return empty list instead of None
-        return encodings[0].tolist()
+            return [], is_real  # return empty list instead of None
+        return encodings[0].tolist(), is_real
 
     except Exception as e:
         print(f"⚠️ Error during face encoding: {e}")
-        return []
+        return [], False
 
 
-def base64_to_encoding(b64_string) -> list:
+def base64_to_encoding(b64_string) -> tuple:
     header, data = (b64_string.split(',',1) if ',' in b64_string else (None, b64_string))
     imgbytes = base64.b64decode(data)
     return imagefile_to_encoding(imgbytes)
