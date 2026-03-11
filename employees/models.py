@@ -69,14 +69,28 @@ class EmployeeAttendance(models.Model):
         return f"{self.employee_id} - {self.attendence_type} @ {self.attendence_time}"
 
 class Register(models.Model):
-    name = models.CharField(max_length=500)
-    role = models.CharField(max_length=500)
-    password = models.CharField(max_length=500)
-    confirmPassword = models.CharField(max_length=500)
-    fingerprint_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
-    employee_id = models.CharField(max_length=50, null=True, blank=True)
-    department = models.CharField(max_length=100, null=True, blank=True)
-    device = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    name             = models.CharField(max_length=500)
+    role             = models.CharField(max_length=500)
+    password         = models.CharField(max_length=500)
+    confirmPassword  = models.CharField(max_length=500)
+    allowed_ip       = models.CharField(max_length=45, unique=True, null=True, blank=True)  # static IP for device login (IPv4/IPv6)
+    employee_id      = models.CharField(max_length=50, null=True, blank=True)
+    department       = models.CharField(max_length=100, null=True, blank=True)
+    device           = models.CharField(max_length=255, unique=True, null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.role}) — IP: {self.allowed_ip or 'N/A'}"
+
+
+class AllowedDevice(models.Model):
+    """Global whitelist for face recognition endpoints."""
+    label      = models.CharField(max_length=100, help_text="e.g. 'OPD Kiosk 1'")
+    ip_address = models.CharField(max_length=45, unique=True)
+    is_active  = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.label} ({self.ip_address}) — {'Active' if self.is_active else 'Inactive'}"
 
 class SpoofingAttempt(models.Model):
     employee_id = models.CharField(max_length=50, null=True, blank=True)

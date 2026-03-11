@@ -170,10 +170,14 @@ def attendance_report_with_employee_details(request):
         departments = db['backend_diagnostics_Departments']
         designations = db['backend_diagnostics_Designation']
 
+        # ---- SQL Department Map ----
+        from employees.models import Department
+        sql_dept_map = {d.name: d.id for d in Department.objects.all()}
+
         # ---- Create Lookup Maps ----
         dept_map = {
             d.get('department_code'): d.get('department_name')
-            for d in departments.find({'is_active': True})
+            for d in departments.find() # Remove is_active filter
         }
         desig_map = {
             d.get('Designation_code'): d.get('designation')
@@ -183,28 +187,43 @@ def attendance_report_with_employee_details(request):
         # ---- Create Employee Lookup ----
         employee_map = {}
         for emp in profiles.find():
+            dept_code = emp.get("department")
+            dept_name = dept_map.get(dept_code, dept_code)
             employee_map[emp.get("employeeId")] = {
                 "employeeName": emp.get("employeeName"),
-                "department": dept_map.get(emp.get("department"), emp.get("department")),
+                "department": dept_name,
+                "department_id": sql_dept_map.get(dept_name, dept_code), # SQL ID if name matches
                 "designation": desig_map.get(emp.get("designation"), emp.get("designation")),
             }
 
         # ---- Combine Attendance + Employee Info ----
         result = []
-        department_filter = request.GET.get('department') # Optional
+        department_filter = request.GET.get('department')
+        
+        allowed_dept_ids = []
+        if department_filter and department_filter != 'All':
+            raw_ids = [d.strip() for d in department_filter.split(',')]
+            # Resolve numeric IDs to names if they exist
+            from employees.models import Department
+            resolved_names = list(Department.objects.filter(id__in=[id for id in raw_ids if id.isdigit()]).values_list('name', flat=True))
+            allowed_dept_ids = raw_ids + resolved_names
 
         for r in records:
             emp_info = employee_map.get(r.employee_id, {})
-            emp_dept = emp_info.get("department", "N/A")
+            emp_dept_name = emp_info.get("department") # Resolved name
+            emp_dept_id = emp_info.get("department_id") # Raw code/ID
             
             # Filter if requested
-            if department_filter and department_filter != 'All' and emp_dept != department_filter:
-                continue
+            if allowed_dept_ids:
+                # Match against ID (as string) OR Name to be flexible
+                if str(emp_dept_id) not in allowed_dept_ids and emp_dept_name not in allowed_dept_ids:
+                    continue
 
             result.append({
                 "employee_id": r.employee_id,
                 "employee_name": emp_info.get("employeeName", "Unknown"),
-                "department": emp_dept,
+                "department": emp_info.get("department", "N/A"),
+                "department_id": emp_info.get("department_id"), # SQL ID or raw code
                 "designation": emp_info.get("designation", "N/A"),
                 "device_id": r.device_id,
                 "attendence_type": r.attendence_type,
@@ -254,11 +273,29 @@ def get_spoofing_attempts(request):
             client = MongoClient(mongo_uri)
             db = client[db_name]
             
-            # Resolve department code
-            dept_doc = db['backend_diagnostics_Departments'].find_one({"department_name": department})
-            dept_code = dept_doc.get("department_code") if dept_doc else department
+            raw_values = [d.strip() for d in department.split(',')]
+            
+            # Resolve numeric IDs to names
+            from employees.models import Department
+            numeric_ids = [rv for rv in raw_values if rv.isdigit()]
+            resolved_names = list(Department.objects.filter(id__in=numeric_ids).values_list('name', flat=True))
+            
+            dept_query_values = raw_values + resolved_names
+            
+            # Resolve department codes from names OR treat them as codes directly
+            dept_cursor = db['backend_diagnostics_Departments'].find({
+                "$or": [
+                    {"department_name": {"$in": dept_query_values}},
+                    {"department_code": {"$in": dept_query_values}}
+                ]
+            })
+            dept_codes = [d.get("department_code") for d in dept_cursor]
+            
+            # If nothing found in mongo, fallback to raw values (might be codes already)
+            if not dept_codes:
+                dept_codes = dept_query_values
 
-            query = {"$or": [{"department": dept_code}, {"department": department}]}
+            query = {"department": {"$in": dept_codes}}
             dept_profiles = list(db['backend_diagnostics_profile'].find(query, {"employeeId": 1}))
             dept_emp_ids = [str(p["employeeId"]) for p in dept_profiles]
 

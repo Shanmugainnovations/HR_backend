@@ -11,10 +11,12 @@ def shift_list_create(request):
     if request.method == 'GET':
         department = request.query_params.get('department')
         if department and department != 'All':
-            # Assuming Department Name is passed. 
-            # Note: Department model name field is `name`.
-            # If backend uses codes, we might need mapping, but Department model seems to stick to names here.
-            shifts = Shift.objects.filter(departments__name=department)
+            dept_ids = [d.strip() for d in department.split(',')]
+            # Check if we have numeric IDs or names
+            if any(id.isdigit() for id in dept_ids):
+                shifts = Shift.objects.filter(departments__id__in=dept_ids).distinct()
+            else:
+                shifts = Shift.objects.filter(departments__name__in=dept_ids).distinct()
         else:
             shifts = Shift.objects.all()
             
@@ -53,9 +55,13 @@ def shift_detail(request, pk):
 @api_view(['GET', 'POST'])
 def department_list_create(request):
     if request.method == 'GET':
-        dept_name = request.query_params.get('department')
-        if dept_name and dept_name != 'All':
-            departments = Department.objects.filter(name=dept_name)
+        dept_ids = request.query_params.get('department')
+        if dept_ids and dept_ids != 'All':
+            id_list = [d.strip() for d in dept_ids.split(',')]
+            if any(id.isdigit() for id in id_list):
+                departments = Department.objects.filter(id__in=id_list)
+            else:
+                departments = Department.objects.filter(name__in=id_list)
         else:
             departments = Department.objects.all()
         serializer = DepartmentSerializer(departments, many=True)
@@ -121,25 +127,45 @@ def get_monthly_roster(request):
             client = MongoClient(mongo_uri)
             db = client[db_name]
 
-            # 1. Get Dept Code
-            dept_doc = db['backend_diagnostics_Departments'].find_one({"department_name": department})
-            if dept_doc:
-                dept_code = dept_doc.get("department_code")
-                # 2. Get Employees in Dept
-                profiles = db['backend_diagnostics_profile'].find({"department": dept_code})
-                employee_ids = [str(p.get("employeeId")) for p in profiles]
-                
-                # Filter Schedules
-                schedules = schedules.filter(employee_id__in=employee_ids)
-            else:
-                 # If department name not found directly, maybe code was passed? Or invalid.
-                 # Try filtering by assuming `department` param IS the code
-                 profiles = db['backend_diagnostics_profile'].find({"department": department})
-                 employee_ids = [str(p.get("employeeId")) for p in profiles]
-                 if employee_ids:
-                    schedules = schedules.filter(employee_id__in=employee_ids)
-                 else:
-                    return Response([], status=200) # No match
+            raw_ids = [d.strip() for d in department.split(',')]
+            
+            # Resolve numeric IDs to names
+            from ..models import Department
+            numeric_ids = [rid for rid in raw_ids if rid.isdigit()]
+            resolved_names = list(Department.objects.filter(id__in=numeric_ids).values_list('name', flat=True))
+            
+            # Important: Add the names from raw_ids if they aren't numeric
+            all_names = resolved_names + [rid for rid in raw_ids if not rid.isdigit()]
+
+            # 1. Resolve Names to Codes via Mongo
+            dept_col = db['backend_diagnostics_Departments']
+            resolved_codes = list(dept_col.find(
+                {"department_name": {"$in": all_names}},
+                {"department_code": 1}
+            ))
+            codes = [c.get("department_code") for c in resolved_codes]
+
+            # Combine names, codes, and IDs for the profile search
+            search_values = all_names + codes + raw_ids
+            print(f"DEBUG: Roster Filtering - Department Filter: {department}")
+            print(f"DEBUG: Roster Filtering - Resolved Names: {all_names}")
+            print(f"DEBUG: Roster Filtering - Resolved Codes: {codes}")
+            print(f"DEBUG: Roster Filtering - Search Values: {search_values}")
+
+            # 2. Get Employees in these Depts
+            profiles = list(db['backend_diagnostics_profile'].find({
+                "$or": [
+                    {"department": {"$in": search_values}},
+                    {"department_id": {"$in": search_values}},
+                    {"department_name": {"$in": search_values}}
+                ]
+            }))
+            employee_ids = [str(p.get("employeeId")) for p in profiles]
+            print(f"DEBUG: Roster Filtering - Found {len(employee_ids)} Employees: {employee_ids}")
+            
+            # Filter Schedules
+            schedules = schedules.filter(employee_id__in=employee_ids)
+            print(f"DEBUG: Roster Filtering - Resulting Schedule Count: {schedules.count()}")
 
         except Exception as e:
             print(f"Error filtering roster by department: {e}")
@@ -153,6 +179,28 @@ def assign_shift(request):
     from ..models import EmployeeShiftSchedule, Employee, Shift
     from ..serializers import EmployeeShiftScheduleSerializer
     
+    if isinstance(request.data, list):
+        for item in request.data:
+            employee_id = item.get('employee_id')
+            shift_id = item.get('shift_id')
+            date = item.get('date')
+
+            if not employee_id or not date:
+                 return Response({"error": "employee_id and date are required for all items"}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                if not shift_id:
+                    EmployeeShiftSchedule.objects.filter(employee_id=employee_id, date=date).delete()
+                else:
+                    EmployeeShiftSchedule.objects.update_or_create(
+                        employee_id=employee_id,
+                        date=date,
+                        defaults={'shift_id': shift_id}
+                    )
+            except Exception as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Bulk assignment successful"}, status=status.HTTP_200_OK)
+
     employee_id = request.data.get('employee_id')
     shift_id = request.data.get('shift_id')
     date = request.data.get('date')

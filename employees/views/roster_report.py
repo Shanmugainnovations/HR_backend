@@ -12,7 +12,7 @@ from ..models import EmployeeShiftSchedule
 @permission_classes([AllowAny])
 def export_roster_csv(request):
     month_str = request.query_params.get('month')
-    department_filter = request.query_params.get('department') # Optional
+    department_filter = request.query_params.get('department') # Optional (IDs)
 
     if not month_str:
         return HttpResponse("Month parameter (YYYY-MM) is required", status=400)
@@ -21,6 +21,25 @@ def export_roster_csv(request):
         year, month = map(int, month_str.split('-'))
     except ValueError:
         return HttpResponse("Invalid format. Use YYYY-MM", status=400)
+
+    # Resolve Department Filter (handle numeric IDs from frontend)
+    all_names = []
+    codes = []
+    raw_ids = []
+    
+    from ..models import Department
+    sql_depts = list(Department.objects.all())
+    sql_dept_map = {d.id: d.name for d in sql_depts}
+
+    if department_filter and department_filter != 'All':
+        raw_ids = [d.strip() for d in department_filter.split(',')]
+        for rid in raw_ids:
+            if rid.isdigit():
+                d_id = int(rid)
+                if d_id in sql_dept_map:
+                    all_names.append(sql_dept_map[d_id])
+            else:
+                all_names.append(rid)
 
     # 1. Fetch Employees and Department Info from Mongo (Global DB)
     try:
@@ -35,26 +54,41 @@ def export_roster_csv(request):
         # Create department lookup map
         dept_map = {
             d.get('department_code'): d.get('department_name')
-            for d in departments_col.find({'is_active': True})
+            for d in departments_col.find() # Removed is_active filter
         }
 
-        # Fetch all profiles
-        all_profiles = list(profiles_col.find())
-        
-        employees_data = []
-        for p in all_profiles:
-            emp_id = str(p.get("employeeId"))
-            dept_code = p.get("department")
-            dept_name = dept_map.get(dept_code, dept_code) or "Unassigned"
-            
-            # Filter by department if requested
-            if department_filter and department_filter != 'All' and dept_name != department_filter:
-                continue
+        # Resolve names to codes
+        if all_names:
+            resolved_codes = list(departments_col.find(
+                {"department_name": {"$in": all_names}},
+                {"department_code": 1}
+            ))
+            codes = [c.get("department_code") for c in resolved_codes]
 
+        search_values = all_names + codes + raw_ids
+
+        # Fetch profiles based on department filter
+        query = {}
+        if search_values:
+            query = {
+                "$or": [
+                    {"department": {"$in": search_values}},
+                    {"department_id": {"$in": search_values}},
+                    {"department_name": {"$in": search_values}}
+                ]
+            }
+        
+        profiles = list(profiles_col.find(query))
+
+        employees_data = []
+        for p in profiles:
+            emp_id = str(p.get("employeeId"))
+            dept_code = p.get("department") # This is the ID/Code
+            
             employees_data.append({
                 "id": emp_id,
                 "name": p.get("employeeName"),
-                "department": dept_name
+                "department": dept_map.get(dept_code, dept_code) or "Unassigned"
             })
 
         # Sort employees by department then name
