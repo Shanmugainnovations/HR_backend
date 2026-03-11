@@ -7,21 +7,39 @@ from employees.models import AllowedDevice
 def get_client_ip(request):
     """
     Extract the client's local network IP.
-    Prioritizes X-Real-IP and X-Forwarded-For headers which are often set by local proxies (like Nginx).
+    Prioritizes Cloudflare headers, X-Real-IP and X-Forwarded-For.
     """
-    # Check for X-Real-IP (common in Nginx local setups)
-    real_ip = request.META.get('HTTP_X_REAL_IP')
-    if real_ip:
-        return real_ip.strip()
-
-    # Check for X-Forwarded-For
+    # 1. Cloudflare specific header
+    cf_ip = request.META.get('HTTP_CF_CONNECTING_IP')
+    
+    # 2. X-Forwarded-For (standard for most proxies)
     x_forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    
+    # 3. X-Real-IP (common in Nginx local setups)
+    real_ip = request.META.get('HTTP_X_REAL_IP')
+    
+    # 4. Standard Remote Addr
+    remote_addr = request.META.get('REMOTE_ADDR', '')
+
+    # Log for debugging - this will show up in the Django server console
+    print(f"--- IP Detection Debug ---")
+    print(f"CF_CONNECTING_IP: {cf_ip}")
+    print(f"X_FORWARDED_FOR: {x_forwarded}")
+    print(f"X_REAL_IP: {real_ip}")
+    print(f"REMOTE_ADDR: {remote_addr}")
+    print(f"--------------------------")
+
+    if cf_ip:
+        return cf_ip.strip()
+
     if x_forwarded:
         # Take the first IP in the list, which is the original client
         return x_forwarded.split(',')[0].strip()
 
-    # Fallback to REMOTE_ADDR
-    return request.META.get('REMOTE_ADDR', '')
+    if real_ip:
+        return real_ip.strip()
+
+    return remote_addr
 
 
 def ip_whitelist_required(view_func):
