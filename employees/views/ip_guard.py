@@ -5,10 +5,22 @@ from employees.models import AllowedDevice
 
 
 def get_client_ip(request):
-    """Extract the real client IP, supporting proxies."""
+    """
+    Extract the client's local network IP.
+    Prioritizes X-Real-IP and X-Forwarded-For headers which are often set by local proxies (like Nginx).
+    """
+    # Check for X-Real-IP (common in Nginx local setups)
+    real_ip = request.META.get('HTTP_X_REAL_IP')
+    if real_ip:
+        return real_ip.strip()
+
+    # Check for X-Forwarded-For
     x_forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
     if x_forwarded:
+        # Take the first IP in the list, which is the original client
         return x_forwarded.split(',')[0].strip()
+
+    # Fallback to REMOTE_ADDR
     return request.META.get('REMOTE_ADDR', '')
 
 
