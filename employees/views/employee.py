@@ -53,23 +53,57 @@ def get_all_employees_with_images(request):
 
         if department and department != 'All':
             db = client[global_db_name]
-            # Resolve department name to code if needed, or query by name/code
-            # Try finding department code first
-            dept_doc = db['backend_diagnostics_Departments'].find_one({"department_name": department})
-            dept_code = dept_doc.get("department_code") if dept_doc else department
+            raw_ids = [d.strip() for d in department.split(',')]
             
-            # Find employees in this department
-            # Searching both by department code and name just in case
-            query = {"$or": [{"department": dept_code}, {"department": department}]}
+            # Resolve numeric IDs to names
+            from ..models import Department
+            numeric_ids = [rid for rid in raw_ids if rid.isdigit()]
+            resolved_names = list(Department.objects.filter(id__in=numeric_ids).values_list('name', flat=True))
+            
+            search_values = raw_ids + resolved_names
+
+            # Find employees in these departments using IDs (dept_code) or names
+            query = {
+                "$or": [
+                    {"department": {"$in": search_values}},
+                    {"department_name": {"$in": search_values}}
+                ]
+            }
             dept_profiles = list(db['backend_diagnostics_profile'].find(query, {"employeeId": 1}))
             dept_emp_ids = [str(p["employeeId"]) for p in dept_profiles]
             
             employees = employees.filter(employee_id__in=dept_emp_ids)
 
-        # 3️⃣ Build response list
+        # 3️⃣ Create SQL Department Name to ID Map
+        from ..models import Department
+        sql_dept_map = {d.name: d.id for d in Department.objects.all()}
+
+        # 4️⃣ Build response list
         employee_list = []
+        
+        # Connect to Global Profiles for department data
+        db_global = client[global_db_name]
+        profiles_col = db_global['backend_diagnostics_profile']
+        
+        # Pre-fetch all profiles for the current set of employees to avoid N+1
+        emp_ids_list = [str(emp.employee_id) for emp in employees]
+        profile_map = {str(p["employeeId"]): p for p in profiles_col.find({"employeeId": {"$in": emp_ids_list}})}
+        
+        # Dept Name Lookup Map (Mongo codes to names)
+        departments_col = db_global['backend_diagnostics_Departments']
+        mongo_dept_map = {
+            d.get('department_code'): d.get('department_name')
+            for d in departments_col.find() # Remove is_active filter
+        }
+
         for emp in employees:
             base64_img = None
+            
+            # Resolve SQL Department ID from Mongo profile data
+            profile = profile_map.get(str(emp.employee_id), {})
+            dept_code = profile.get("department")
+            dept_name = mongo_dept_map.get(dept_code, dept_code)
+            sql_dept_id = sql_dept_map.get(dept_name)
 
             if emp.image_md5:
                 file_obj = fs_hr.find_one({"md5": emp.image_md5})
@@ -90,12 +124,14 @@ def get_all_employees_with_images(request):
                 "name": emp.name,
                 "is_active": emp.is_active,
                 "image_md5": emp.image_md5,
+                "department": dept_name,
+                "department_id": sql_dept_id, # Return SQL ID
                 "created_date": emp.created_date,
                 "lastmodified_date": emp.lastmodified_date,
                 "image_preview": base64_img,
             })
 
-        # 4️⃣ Return JSON response
+        # 5️⃣ Return JSON response
         return JsonResponse(employee_list, safe=False, status=200)
 
     except Exception as e:
@@ -195,20 +231,40 @@ def get_all_employee_from_global(request):
         department_filter = request.query_params.get('department')
         
         if department_filter and department_filter != 'All':
-            # Resolve department name to code
-            dept_doc = departments_col.find_one({"department_name": department_filter})
-            if dept_doc:
-                query['department'] = dept_doc.get("department_code")
-            else:
-                 # Try using as code directly or name if no code found
-                 query['department'] = department_filter
+            raw_values = [d.strip() for d in department_filter.split(',')]
+            
+            # Resolve numeric IDs to names
+            from ..models import Department
+            numeric_ids = [rv for rv in raw_values if rv.isdigit()]
+            resolved_names = list(Department.objects.filter(id__in=numeric_ids).values_list('name', flat=True))
+            
+            search_values = raw_values + resolved_names
+
+            # Resolve department names/codes to Mongo codes
+            dept_cursor = departments_col.find({
+                "$or": [
+                    {"department_name": {"$in": search_values}},
+                    {"department_code": {"$in": search_values}}
+                ]
+            })
+            dept_codes = [d.get("department_code") for d in dept_cursor]
+            
+            # Fallback to search values if no codes found
+            if not dept_codes:
+                dept_codes = search_values
+                
+            query['department'] = {"$in": dept_codes}
 
         global_employees = list(profiles_col.find(query))
+
+        # ✅ Create SQL department map (Name -> ID)
+        from ..models import Department
+        sql_dept_map = {d.name: d.id for d in Department.objects.all()}
 
         # ✅ Create department & designation lookup maps
         dept_map = {
             d.get('department_code'): d.get('department_name')
-            for d in departments_col.find({'is_active': True})
+            for d in departments_col.find() # Remove is_active filter
         }
         desig_map = {
             d.get('Designation_code'): d.get('designation')
@@ -251,6 +307,7 @@ def get_all_employee_from_global(request):
                 "employeeName": emp.get("employeeName"),
                 "email": emp.get("email"),
                 "department": dept_map.get(emp.get("department"), emp.get("department")),
+                "department_id": sql_dept_map.get(dept_map.get(emp.get("department")), emp.get("department")), # NEW: SQL ID
                 "designation": desig_map.get(emp.get("designation"), emp.get("designation")),
                 "mobileNumber": emp.get("mobileNumber"),
                 "gender": emp.get("gender"),

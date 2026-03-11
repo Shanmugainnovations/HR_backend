@@ -18,7 +18,9 @@ from .auth import (
     get_device_info,
     registration,
     login,
-    fingerprint_login
+    ip_login,
+    my_ip,
+    allowed_devices,
 )
 from .utils import save_or_update_encoding
 from .roster_report import export_roster_csv

@@ -21,7 +21,10 @@ urlpatterns = [
     path('hrregistration/', views.registration, name='registration'),
     path('login/', views.login, name='login'),
     path('attendance-report/', views.attendance_report_with_employee_details, name='attendance_report'),
-    path('fingerprint-login/', views.fingerprint_login, name='fingerprint-login'),
+    path('ip-login/', views.ip_login, name='ip-login'),
+    path('my-ip/', views.my_ip, name='my-ip'),
+    path('allowed-devices/', views.allowed_devices, name='allowed-devices'),
+    path('allowed-devices/<int:device_id>/', views.allowed_devices, name='allowed-devices-detail'),
     path('spoofing-reports/', views.get_spoofing_attempts, name='get_spoofing_attempts'),
     path('spoofing-reports/delete/', views.delete_spoofing_attempts, name='delete_spoofing_attempts'),
     

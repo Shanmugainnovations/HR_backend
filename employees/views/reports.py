@@ -26,6 +26,26 @@ def roster_attendance_report(request):
     except ValueError:
         return Response({"error": "Invalid format. Use YYYY-MM"}, status=400)
 
+    # Resolve Department Filter (handle numeric IDs from frontend)
+    all_names = []
+    codes = []
+    raw_ids = []
+    
+    from ..models import Department
+    sql_depts = list(Department.objects.all())
+    sql_dept_map = {d.id: d.name for d in sql_depts}
+    name_to_sql_id = {d.name: d.id for d in sql_depts}
+
+    if department_filter and department_filter != 'All':
+        raw_ids = [d.strip() for d in department_filter.split(',')]
+        for rid in raw_ids:
+            if rid.isdigit():
+                d_id = int(rid)
+                if d_id in sql_dept_map:
+                    all_names.append(sql_dept_map[d_id])
+            else:
+                all_names.append(rid)
+
     # 1. Fetch Employees and Department Info from Mongo (Global DB)
     try:
         mongo_uri = os.environ.get("GLOBAL_DB_HOST")
@@ -35,29 +55,56 @@ def roster_attendance_report(request):
 
         profiles_col = db['backend_diagnostics_profile']
         departments_col = db['backend_diagnostics_Departments']
+        designations_col = db['backend_diagnostics_Designation']
         
-        # Create department lookup map
+        # Create lookup maps
         dept_map = {
             d.get('department_code'): d.get('department_name')
-            for d in departments_col.find({'is_active': True})
+            for d in departments_col.find() # Removed is_active=True to be safe
+        }
+        
+        # Resolve names to codes
+        if all_names:
+            resolved_codes = list(departments_col.find(
+                {"department_name": {"$in": all_names}},
+                {"department_code": 1}
+            ))
+            codes = [c.get("department_code") for c in resolved_codes]
+
+        search_values = all_names + codes + raw_ids
+
+        desig_map = {
+            d.get('Designation_code'): d.get('designation')
+            for d in designations_col.find({'is_active': True})
         }
 
-        # Fetch all profiles
-        all_profiles = list(profiles_col.find())
+        # Fetch profiles based on department filter
+        query = {}
+        if search_values:
+            query = {
+                "$or": [
+                    {"department": {"$in": search_values}},
+                    {"department_id": {"$in": search_values}},
+                    {"department_name": {"$in": search_values}}
+                ]
+            }
         
-        employees_data = {} # {emp_id: {name, department}}
-        for p in all_profiles:
+        profiles = list(profiles_col.find(query))
+
+        employees_data = {} # {emp_id: {name, department, department_id, designation}}
+        for p in profiles:
             emp_id = str(p.get("employeeId"))
-            dept_code = p.get("department")
+            dept_code = p.get("department") # This is the ID/Code
             dept_name = dept_map.get(dept_code, dept_code) or "Unassigned"
             
-            # Filter by department if requested
-            if department_filter and department_filter != 'All' and dept_name != department_filter:
-                continue
+            # Use SQL ID for department_id in response if possible
+            sql_id = name_to_sql_id.get(dept_name, dept_code)
 
             employees_data[emp_id] = {
                 "name": p.get("employeeName"),
-                "department": dept_name
+                "department": dept_name,
+                "department_id": sql_id,
+                "designation": desig_map.get(p.get("designation"), p.get("designation")) or "Unassigned"
             }
         
     except Exception as e:
@@ -134,6 +181,7 @@ def roster_attendance_report(request):
             check_in_str = "-"
             check_out_str = "-"
             total_hours_str = "-"
+            late_early_hrs = "-"
             status = "Absent"
 
             if shift_obj:
@@ -157,7 +205,7 @@ def roster_attendance_report(request):
                     total_hours_str = f"{hours}h {minutes}m"
                 else:
                     # Only one punch
-                    status = "Mismatched Punch"
+                    status = "Single Punch"
                     total_hours_str = "0h 0m"
 
             # Check if Absent (Shift assigned but no punches)
@@ -188,18 +236,38 @@ def roster_attendance_report(request):
                     shift_start_dt = datetime.combine(dummy_date, shift_start)
                     punch_in_dt = datetime.combine(dummy_date, first_punch_time)
                     
+                    late_minutes = 0
+                    early_minutes = 0
+
                     if punch_in_dt > shift_start_dt + timedelta(minutes=15):
                         status = "Late Login"
+                        late_minutes = int((punch_in_dt - shift_start_dt).total_seconds() // 60)
                     
                     if last_punch_time:
                          shift_end_dt = datetime.combine(dummy_date, shift_end)
                          punch_out_dt = datetime.combine(dummy_date, last_punch_time)
+
+                         # Handle night shifts
+                         if shift_end < shift_start:
+                             shift_end_dt += timedelta(days=1)
+                         if last_punch_time < first_punch_time:
+                             punch_out_dt += timedelta(days=1)
                          
                          if punch_out_dt < shift_end_dt - timedelta(minutes=15):
                              if status == "Late Login":
                                  status = "Late In & Early Out"
                              else:
                                  status = "Early Checkout"
+                             early_minutes = int((shift_end_dt - punch_out_dt).total_seconds() // 60)
+
+                    parts = []
+                    if late_minutes > 0:
+                        parts.append(f"Late: {late_minutes // 60}h {late_minutes % 60}m" if late_minutes >= 60 else f"Late: {late_minutes}m")
+                    if early_minutes > 0:
+                        parts.append(f"Early: {early_minutes // 60}h {early_minutes % 60}m" if early_minutes >= 60 else f"Early: {early_minutes}m")
+                    
+                    if parts:
+                        late_early_hrs = " | ".join(parts)
 
                 except Exception as e:
                     # Keep as Present if error
@@ -210,11 +278,14 @@ def roster_attendance_report(request):
                 "employee_id": emp_id,
                 "employee_name": emp_info['name'],
                 "department": emp_info['department'],
+                "department_id": emp_info['department_id'],
+                "designation": emp_info['designation'],
                 "shift_name": shift_name,
                 "shift_timing": shift_timing,
                 "check_in": check_in_str,
                 "check_out": check_out_str,
                 "total_hours": total_hours_str,
+                "late_early_hrs": late_early_hrs,
                 "status": status
             })
 
@@ -230,7 +301,7 @@ def roster_attendance_report(request):
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
 
         writer = csv.writer(response)
-        writer.writerow(['Date', 'Employee ID', 'Employee Name', 'Department', 'Allocated Shift', 'Shift Timings', 'Check In', 'Check Out', 'Total Hours', 'Status'])
+        writer.writerow(['Date', 'Employee ID', 'Employee Name', 'Department', 'Designation', 'Allocated Shift', 'Shift Timings', 'Check In', 'Check Out', 'Total Hours', 'Late / Early', 'Status'])
 
         for row in report_data:
             writer.writerow([
@@ -238,11 +309,13 @@ def roster_attendance_report(request):
                 row['employee_id'],
                 row['employee_name'],
                 row['department'],
+                row['designation'],
                 row['shift_name'],
                 row['shift_timing'],
                 row['check_in'],
                 row['check_out'],
                 row['total_hours'],
+                row['late_early_hrs'],
                 row['status']
             ])
         
