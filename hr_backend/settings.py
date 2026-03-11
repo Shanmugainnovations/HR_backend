@@ -36,6 +36,10 @@ ALLOWED_HOSTS = [
 
 # Trust real client IP from X-Forwarded-For if behind a proxy/nginx
 USE_X_FORWARDED_HOST = True
+    '0.0.0.0',
+    'test.shinova.in',
+    'shinova.in',
+]
 
 
 # Application definition
@@ -158,3 +162,4 @@ CORS_ALLOW_HEADERS = [
     'content-type',
     'x-user-role'   
 ]
+

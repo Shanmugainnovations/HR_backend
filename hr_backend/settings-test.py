@@ -27,7 +27,14 @@ SECRET_KEY = 'django-insecure--a$%n+5rdzff@@3=e3l_7(25^7zd&vc47e7&z$w)a(-#-po8hz
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    'localhost',
+    '127.0.0.1',
+    '0.0.0.0',
+    'test.shinova.in',
+    'shinova.in',
+]
+
 
 
 # Application definition
