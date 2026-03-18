@@ -38,6 +38,8 @@ urlpatterns = [
     path('roster/', get_monthly_roster, name='get-monthly-roster'),
     path('roster/assign/', assign_shift, name='assign-shift'),
     path('roster/export/', views.export_roster_csv, name='export-roster-csv'),
+    path('roster/export-xlsx/', views.export_roster_xlsx, name='export-roster-xlsx'),
+    path('roster/import-xlsx/', views.import_roster_xlsx, name='import-roster-xlsx'),
     
     path('roster-report/', reports.roster_attendance_report, name='roster-attendance-report'),
 ]
