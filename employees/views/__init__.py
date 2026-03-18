@@ -23,7 +23,7 @@ from .auth import (
     allowed_devices,
 )
 from .utils import save_or_update_encoding
-from .roster_report import export_roster_csv
+from .roster_report import export_roster_csv, export_roster_xlsx, import_roster_xlsx
 from .reports import roster_attendance_report
 
 from .shifts import (
