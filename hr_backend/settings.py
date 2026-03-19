@@ -157,6 +157,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOW_HEADERS = [
     'Authorization',
     'content-type',
-    'x-user-role'   
+    'x-user-role',
+    'x-device-id'   
 ]
-

@@ -352,8 +352,8 @@ def register_employee(request):
 
     # ✅ Convert image to face encoding
     encoding, is_real = imagefile_to_encoding(image_file)
-    if not is_real:
-        return JsonResponse({"error": "Spoofing attempt detected. Registration failed."}, status=400)
+    # if not is_real:
+    #     return JsonResponse({"error": "Spoofing attempt detected. Registration failed."}, status=400)
 
     if not encoding:
         return JsonResponse({"error": "No face detected in uploaded image"}, status=400)

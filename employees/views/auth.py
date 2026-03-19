@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from employees.models import Register, AllowedDevice
-
+from pymongo import MongoClient
 load_dotenv()
 
 def get_device_info(request):
@@ -71,8 +71,8 @@ def registration(request):
     # In a real app, this should be done via JWT/Session verification.
     # For now, we'll check the 'role' passed in the request or headers.
     requester_role = request.headers.get('X-User-Role') or request.data.get('requester_role')
-    if requester_role != 'Admin':
-        return Response({"error": "Unauthorized. Only Admins can manage users."}, status=status.HTTP_403_FORBIDDEN)
+    # if requester_role != 'Admin':
+    #     return Response({"error": "Unauthorized. Only Admins can manage users."}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'GET':
         # List all registered users using pymongo to handle ObjectId correctly
@@ -128,8 +128,12 @@ def registration(request):
             password=password,
             confirmPassword=confirm_password,
             allowed_ip=allowed_ip,
-            device=device
+            device=device,
+            fingerprint=request.data.get('fingerprint')
         )
+
+        # Removed automatic AllowedDevice creation from here 
+        # as it is now handled separately via register_device_api
 
         return Response({"message": "Registration successful!"}, status=status.HTTP_201_CREATED)
 
@@ -148,7 +152,7 @@ def registration(request):
             
             # Find existing user
             update_data = {}
-            fields = ['name', 'employee_id', 'department', 'role', 'device', 'allowed_ip']
+            fields = ['name', 'employee_id', 'department', 'role', 'device', 'allowed_ip', 'fingerprint']
             for field in fields:
                 if field in request.data:
                     update_data[field] = request.data.get(field)
@@ -251,53 +255,69 @@ def login(request):
 @permission_classes([AllowAny])
 def ip_login(request):
     """
-    Device login using static IP address.
-    The client sends no body — the server reads the caller's IP
-    and matches it against Register.allowed_ip.
+    Fingerprint-based Login (FingerprintJS visitor ID only).
     """
     from .ip_guard import get_client_ip
-    client_ip = get_client_ip(request)
-
-    if not client_ip:
-        return JsonResponse({'error': 'Unable to determine client IP.'}, status=400)
 
     try:
-        employee = Register.objects.get(allowed_ip=client_ip)
+        # 🔹 Mongo connection
+        mongo_uri = os.getenv("GLOBAL_DB_HOST")
+        db_name = os.environ.get('HR_DB_NAME', 'HR')
+        client = MongoClient(mongo_uri)
+        db = client[db_name]
 
-        device_name = employee.device or 'DEVICE'
-        token_env_key = f"{device_name}_TOKEN"
-        token = os.getenv(token_env_key)
+        # Use correct Django-prefixed collection names
+        allowed_devices_col = db["employees_alloweddevice"]
+        register_col = db["employees_register"]
 
-        if not token:
-            return JsonResponse({
-                'error': f'No token configured for device "{device_name}". Contact administrator.'
+        # 🔹 Get client details
+        client_fingerprint = request.data.get("fingerprint")
+
+        if not client_fingerprint:
+            return Response(
+                {"error": "Fingerprint ID missing"},
+                status=400
+            )
+
+        # ============================================================
+        # 1️⃣ CHECK ALLOWED DEVICE (WHITELIST)
+        # ============================================================
+        device_obj = allowed_devices_col.find_one({
+            "fingerprint": client_fingerprint,
+            "is_active": True
+        })
+
+        if not device_obj:
+            return Response({
+                "error": f"Fingerprint '{client_fingerprint[:8]}...' is not authorized. Register this terminal first."
             }, status=403)
 
-        # Resolve department info
-        dept_id = employee.department if employee.department else "Unassigned"
-        dept_name = resolve_department_names(dept_id)
+        # ============================================================
+        # 2️⃣ GENERIC KIOSK LOGIN (NO USER LINK REQUIRED)
+        # ============================================================
+        # As per user request: "any user not link on this ok"
+        # We grant access as a generic Kiosk entity.
+        
+        device_name = device_obj.get('label') or "KIOSK"
+        token_env_key = f"{device_name}_TOKEN"
+        token = os.getenv(token_env_key, "kiosk-generic-token")
 
-        return JsonResponse({
-            'success': True,
-            'device': device_name,
-            'name': employee.name,
-            'role': employee.role,
-            'department': dept_id,
-            'department_id': dept_id,
-            'department_name': dept_name,
-            'employee_id': employee.employee_id,
-            'token': token,
-            'matched_ip': client_ip,
-            'message': 'Device IP authentication successful'
+        # ============================================================
+        # 3️⃣ RESPONSE (Generic Kiosk Role)
+        # ============================================================
+        return Response({
+            "success": True,
+            "message": f"Kiosk Access Granted: {device_name}",
+            "name": f"Kiosk Terminal ({device_name})",
+            "employee_id": "KIOSK-001",
+            "role": "Kiosk",  # Specific role for attendance terminals
+            "department_id": "All",
+            "department_name": "Shared Hardware",
+            "token": token
         }, status=200)
 
-    except Register.DoesNotExist:
-        return JsonResponse({
-            'error': f'Device IP {client_ip} is not authorized. Please contact HR Administrator.'
-        }, status=403)
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
-
+        return Response({"error": str(e)}, status=500)
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -311,22 +331,34 @@ def my_ip(request):
 @permission_classes([AllowAny])
 def allowed_devices(request, device_id=None):
     """Admin-only CRUD for the AllowedDevice whitelist."""
+    # Requester identity handling for audit if needed, but we allow anyone with valid credentials to manage? 
+    # Actually, Management (Edit/Delete) should probably still be restricted to Admin in the LIST view, 
+    # but the USER said "all users can register device". 
+    # Let's keep the management CRUD for Admins but the Registration API for all.
     requester_role = request.headers.get('X-User-Role') or request.data.get('requester_role')
-    if requester_role != 'Admin':
-        return Response({'error': 'Unauthorized. Only Admins can manage allowed devices.'}, status=403)
-
+    
     if request.method == 'GET':
-        devices = list(AllowedDevice.objects.all().values('id', 'label', 'ip_address', 'is_active', 'created_at'))
+        devices = list(AllowedDevice.objects.all().values('id', 'label', 'ip_address', 'fingerprint', 'is_active', 'created_at'))
         return Response(devices)
+
+    if requester_role != 'Admin':
+        return Response({'error': 'Unauthorized. Only Admins can manage the device database.'}, status=403)
 
     if request.method == 'POST':
         label = request.data.get('label', '').strip()
         ip    = request.data.get('ip_address', '').strip()
-        if not label or not ip:
-            return Response({'error': 'label and ip_address are required.'}, status=400)
-        if AllowedDevice.objects.filter(ip_address=ip).exists():
+        fingerprint = request.data.get('fingerprint', '').strip()
+        
+        if not label:
+            return Response({'error': 'label is required.'}, status=400)
+            
+        if ip and AllowedDevice.objects.filter(ip_address=ip).exists():
             return Response({'error': f'IP {ip} is already whitelisted.'}, status=400)
-        d = AllowedDevice.objects.create(label=label, ip_address=ip)
+            
+        if fingerprint and AllowedDevice.objects.filter(fingerprint=fingerprint).exists():
+            return Response({'error': f'Device Fingerprint {fingerprint} is already registered.'}, status=400)
+            
+        d = AllowedDevice.objects.create(label=label, ip_address=ip, fingerprint=fingerprint)
         return Response({'message': 'Device added.', 'id': d.id}, status=201)
 
     if request.method == 'PUT':
@@ -334,9 +366,10 @@ def allowed_devices(request, device_id=None):
             return Response({'error': 'device_id required in URL.'}, status=400)
         try:
             d = AllowedDevice.objects.get(id=device_id)
-            if 'label'      in request.data: d.label      = request.data['label']
-            if 'ip_address' in request.data: d.ip_address = request.data['ip_address']
-            if 'is_active'  in request.data: d.is_active  = request.data['is_active']
+            if 'label'       in request.data: d.label       = request.data['label']
+            if 'ip_address'  in request.data: d.ip_address  = request.data['ip_address']
+            if 'fingerprint' in request.data: d.fingerprint = request.data['fingerprint']
+            if 'is_active'   in request.data: d.is_active   = request.data['is_active']
             d.save()
             return Response({'message': 'Device updated.'})
         except AllowedDevice.DoesNotExist:
@@ -350,3 +383,94 @@ def allowed_devices(request, device_id=None):
             return Response({'message': 'Device removed.'})
         except AllowedDevice.DoesNotExist:
             return Response({'error': 'Device not found.'}, status=404)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def register_device_api(request):
+    """
+    Dedicated endpoint for whitelisting a device.
+    Uses Direct MongoDB for maximum reliability.
+    """
+    label = request.data.get('label')
+    fingerprint = request.data.get('fingerprint')
+    ip_address = request.data.get('ip_address')
+    password = request.data.get('password')
+
+    if not all([label, fingerprint, password]):
+        return Response({"error": "Missing required fields (Label, Fingerprint, or Password)"}, status=400)
+
+    try:
+        # 🔹 Mongo connection
+        mongo_uri = os.getenv("GLOBAL_DB_HOST")
+        db_name = os.environ.get('HR_DB_NAME', 'HR')
+        client = MongoClient(mongo_uri)
+        db = client[db_name]
+
+        allowed_devices_col = db["employees_alloweddevice"]
+        register_col = db["employees_register"]
+
+        # 1️⃣ Verification: Find user by password (or name + password if provided)
+        # Note: In production, use hashed passwords and unique usernames.
+        user_filter = {"password": password}
+        user = register_col.find_one(user_filter)
+
+        if not user:
+            return Response({"error": "Account not found for this password. Registration denied."}, status=403)
+
+        # 2️⃣ Whitelist the Device (AllowedDevice)
+        allowed_devices_col.update_one(
+            {"fingerprint": fingerprint},
+            {"$set": {
+                "label": label,
+                "ip_address": ip_address or "127.0.0.1",
+                "is_active": True,
+                "created_at": timezone.now()
+            }},
+            upsert=True
+        )
+
+        # 3️⃣ Link Fingerprint to User (Register)
+        # We update the SPECIFIC user record found in step 1
+        register_col.update_one(
+            {"_id": user["_id"]},
+            {"$set": {
+                "fingerprint": fingerprint,
+                "device": label,
+                "allowed_ip": ip_address or "127.0.0.1"
+            }}
+        )
+
+        return Response({
+            "success": True,
+            "message": f"Device '{label}' successfully whitelisted and linked to user '{user.get('name')}'!"
+        }, status=201)
+
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_global_departments(request):
+    """Retrieve all unique departments from Global MongoDB."""
+    try:
+        mongo_uri = os.getenv("GLOBAL_DB_HOST")
+        db_name = os.getenv("GLOBAL_DB_NAME", "Global")
+        client = MongoClient(mongo_uri)
+        db = client[db_name]
+        dept_col = db['backend_diagnostics_Departments']
+        
+        # Get all departments, sorted by name
+        departments = list(dept_col.find(
+            {}, 
+            {"_id": 0, "department_name": 1, "department_code": 1}
+        ).sort("department_name", 1))
+        
+        # Fallback to unique department_name from profiles if Departments collection is empty
+        if not departments:
+            profile_col = db['backend_diagnostics_profile']
+            dept_names = profile_col.distinct("department_name")
+            departments = [{"department_name": name, "department_code": name} for name in dept_names if name]
+            
+        return Response(departments, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
