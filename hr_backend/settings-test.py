@@ -94,7 +94,7 @@ import os
 DATABASES = {
     'default': {
         'ENGINE': 'djongo',
-        'NAME': os.environ.get('HR_DB_NAME', 'Tracker'),
+        'NAME': os.environ.get('HR_DB_NAME', 'HR'),
         'ENFORCE_SCHEMA': False,
         'CLIENT': {
             'host': os.environ.get('GLOBAL_DB_HOST'),
