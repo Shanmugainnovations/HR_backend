@@ -65,142 +65,149 @@ def resolve_department_names(dept_str):
     except:
         return dept_str
 
-@api_view(['GET', 'POST', 'PUT', 'DELETE'])
-@csrf_exempt
-def registration(request):
-    # Enforce Admin-only access for all registration actions
-    # In a real app, this should be done via JWT/Session verification.
-    # For now, we'll check the 'role' passed in the request or headers.
-    requester_role = request.headers.get('X-User-Role') or request.data.get('requester_role')
-    # if requester_role != 'Admin':
-    #     return Response({"error": "Unauthorized. Only Admins can manage users."}, status=status.HTTP_403_FORBIDDEN)
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from pymongo import MongoClient
+from bson import ObjectId
+import os
 
-    if request.method == 'GET':
-        # List all registered users using pymongo to handle ObjectId correctly
-        try:
-            mongo_uri = os.getenv("GLOBAL_DB_HOST")
-            hr_db_name = os.getenv("HR_DB_NAME", "HR")
-            client = MongoClient(mongo_uri)
-            db = client[hr_db_name]
-            users_col = db['employees_register']
-            
-            # Fetch and convert ObjectId to string ID
+
+def get_db():
+    mongo_uri = os.getenv("GLOBAL_DB_HOST")
+    db_name = os.getenv("HR_DB_NAME", "HR")
+    client = MongoClient(mongo_uri)
+    return client[db_name]
+
+
+@api_view(['GET', 'POST', 'PUT', 'DELETE'])
+def registration(request):
+
+    try:
+        db = get_db()
+        users_col = db['employees_register']
+
+        # ======================================================
+        # ✅ GET ALL USERS
+        # ======================================================
+        if request.method == 'GET':
             users = list(users_col.find().sort('_id', -1))
             for u in users:
                 u['id'] = str(u.pop('_id'))
-            
-            return Response(users, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(users, status=200)
 
-    if request.method == 'POST':
-        # Handle Registration
-        name = request.data.get('name')
-        employee_id = request.data.get('employee_id') # New Field
-        department = request.data.get('department') # New Field
-        role = request.data.get('role')
-        password = request.data.get('password')
-        confirm_password = request.data.get('confirmPassword')
-        fingerprint_id = request.data.get('fingerprint_id')  # kept for backwards compat
-        allowed_ip    = request.data.get('allowed_ip')         # new: static IP
-        device = request.data.get('device')
+        # ======================================================
+        # ✅ CREATE USER
+        # ======================================================
+        if request.method == 'POST':
+            data = request.data
 
-        # Validate password match
-        if password != confirm_password:
-            return Response({"error": "Passwords do not match"}, status=status.HTTP_400_BAD_REQUEST)
+            name = data.get('name')
+            employee_id = data.get('employee_id')
+            department = data.get('department')
+            role = data.get('role')
+            password = data.get('password')
+            confirm_password = data.get('confirmPassword')
+            allowed_ip = data.get('allowed_ip')
+            device = data.get('device')
+            fingerprint = data.get('fingerprint')
 
-        # Check for duplicates (Name or Employee ID)
-        if Register.objects.filter(name=name).exists():
-             return Response({"error": "User with this name already exists"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        if employee_id and Register.objects.filter(employee_id=employee_id).exists():
-             return Response({"error": "User with this Employee ID already exists"}, status=status.HTTP_400_BAD_REQUEST)
+            # 🔴 Validation
+            if not name or not password:
+                return Response({"error": "Name & Password required"}, status=400)
 
-        # Validate IP uniqueness if provided
-        if allowed_ip and Register.objects.filter(allowed_ip=allowed_ip).exists():
-            return Response({"error": "This IP address is already assigned to another user."}, status=status.HTTP_400_BAD_REQUEST)
+            if password != confirm_password:
+                return Response({"error": "Passwords do not match"}, status=400)
 
-        # Create new record
-        Register.objects.create(
-            name=name,
-            employee_id=employee_id,
-            department=department,
-            role=role,
-            password=password,
-            confirmPassword=confirm_password,
-            allowed_ip=allowed_ip,
-            device=device,
-            fingerprint=request.data.get('fingerprint')
-        )
+            # 🔴 Duplicate checks (Mongo)
+            if users_col.find_one({"name": name}):
+                return Response({"error": "User already exists"}, status=400)
 
-        # Removed automatic AllowedDevice creation from here 
-        # as it is now handled separately via register_device_api
+            if employee_id and users_col.find_one({"employee_id": employee_id}):
+                return Response({"error": "Employee ID already exists"}, status=400)
 
-        return Response({"message": "Registration successful!"}, status=status.HTTP_201_CREATED)
+            if allowed_ip and users_col.find_one({"allowed_ip": allowed_ip}):
+                return Response({"error": "IP already assigned"}, status=400)
 
-    if request.method == 'PUT':
-        # Update User
-        user_id = request.data.get('id')
-        if not user_id:
-            return Response({"error": "User ID is required for update"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        try:
-            mongo_uri = os.getenv("GLOBAL_DB_HOST")
-            hr_db_name = os.getenv("HR_DB_NAME", "HR")
-            client = MongoClient(mongo_uri)
-            db = client[hr_db_name]
-            users_col = db['employees_register']
-            
-            # Find existing user
+            # 🔴 Insert user
+            user_doc = {
+                "name": name,
+                "employee_id": employee_id,
+                "department": department,
+                "role": role,
+                "password": password,
+                "allowed_ip": allowed_ip,
+                "device": device,
+                "fingerprint": fingerprint
+            }
+
+            result = users_col.insert_one(user_doc)
+
+            return Response({
+                "message": "User created successfully",
+                "id": str(result.inserted_id)
+            }, status=201)
+
+        # ======================================================
+        # ✅ UPDATE USER
+        # ======================================================
+        if request.method == 'PUT':
+            user_id = request.data.get('id')
+
+            if not user_id:
+                return Response({"error": "User ID required"}, status=400)
+
             update_data = {}
-            fields = ['name', 'employee_id', 'department', 'role', 'device', 'allowed_ip', 'fingerprint']
-            for field in fields:
-                if field in request.data:
-                    update_data[field] = request.data.get(field)
-            
+
+            fields = [
+                "name", "employee_id", "department",
+                "role", "device", "allowed_ip", "fingerprint"
+            ]
+
+            for f in fields:
+                if f in request.data:
+                    update_data[f] = request.data.get(f)
+
             password = request.data.get('password')
             confirm_password = request.data.get('confirmPassword')
-            
+
             if password:
                 if password != confirm_password:
-                    return Response({"error": "Passwords do not match"}, status=status.HTTP_400_BAD_REQUEST)
-                update_data['password'] = password
-                update_data['confirmPassword'] = confirm_password
-            
+                    return Response({"error": "Passwords do not match"}, status=400)
+                update_data["password"] = password
+
             if not update_data:
-                return Response({"message": "No changes to update"}, status=status.HTTP_200_OK)
+                return Response({"message": "No changes"}, status=200)
 
             result = users_col.update_one(
                 {"_id": ObjectId(user_id)},
                 {"$set": update_data}
             )
-            
-            if result.matched_count == 0:
-                return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
-                
-            return Response({"message": "User updated successfully!"}, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    if request.method == 'DELETE':
-        user_id = request.GET.get('id')
-        if not user_id:
-             return Response({"error": "User ID is required for deletion"}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            mongo_uri = os.getenv("GLOBAL_DB_HOST")
-            hr_db_name = os.getenv("HR_DB_NAME", "HR")
-            client = MongoClient(mongo_uri)
-            db = client[hr_db_name]
-            users_col = db['employees_register']
+            if result.matched_count == 0:
+                return Response({"error": "User not found"}, status=404)
+
+            return Response({"message": "Updated successfully"}, status=200)
+
+        # ======================================================
+        # ✅ DELETE USER
+        # ======================================================
+        if request.method == 'DELETE':
+            user_id = request.GET.get('id')
+
+            if not user_id:
+                return Response({"error": "User ID required"}, status=400)
 
             result = users_col.delete_one({"_id": ObjectId(user_id)})
-            
+
             if result.deleted_count == 0:
-                return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
-                
-            return Response({"message": "User deleted successfully!"}, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                return Response({"error": "User not found"}, status=404)
+
+            return Response({"message": "Deleted successfully"}, status=200)
+
+    except Exception as e:
+        print("🔥 ERROR:", str(e))  # important debug
+        return Response({"error": str(e)}, status=500)
 
 
 @api_view(['POST'])
