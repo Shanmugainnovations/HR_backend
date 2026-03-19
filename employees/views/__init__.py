@@ -21,6 +21,8 @@ from .auth import (
     ip_login,
     my_ip,
     allowed_devices,
+    get_global_departments,
+    register_device_api,
 )
 from .utils import save_or_update_encoding
 from .roster_report import export_roster_csv, export_roster_xlsx, import_roster_xlsx

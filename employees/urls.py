@@ -8,9 +8,14 @@ from .views.shifts import (
 )
 
 urlpatterns = [
-    path('register/', views.register_employee, name='register_employee'),
-    path('employees/', views.get_all_employees_with_images, name='get_all_employees'),
-    path('employees_from_global/', views.get_all_employee_from_global),
+    path('hrregistration/', views.registration),
+    path('register/', views.register_employee, name='register-employee'),
+    path('employees/', views.get_all_employees_with_images, name='employee-list'),
+    path('register-device/', views.register_device_api, name='register-device'),
+    path('employees_from_global/', views.get_all_employee_from_global, name='global-employees'),
+    path('global-departments/', views.get_global_departments, name='global-departments'),
+    path('login/', views.login, name='login'),
+
     path("employees/<str:employee_id>/encode_face/", views.encode_employee_face),
     path('employees/<str:employee_id>/enable_face/', views.enable_facial_recognition),
     path('employees/<str:employee_id>/disable_face/', views.disable_facial_recognition),
@@ -25,6 +30,7 @@ urlpatterns = [
     path('my-ip/', views.my_ip, name='my-ip'),
     path('allowed-devices/', views.allowed_devices, name='allowed-devices'),
     path('allowed-devices/<int:device_id>/', views.allowed_devices, name='allowed-devices-detail'),
+    path('global-departments/', views.get_global_departments, name='global-departments'),
     path('spoofing-reports/', views.get_spoofing_attempts, name='get_spoofing_attempts'),
     path('spoofing-reports/delete/', views.delete_spoofing_attempts, name='delete_spoofing_attempts'),
     
@@ -33,6 +39,7 @@ urlpatterns = [
     path('shifts/<int:pk>/', shift_detail, name='shift-detail'),
     path('departments/', department_list_create, name='department-list'),
     path('departments/<int:pk>/', department_detail, name='department-detail'),
+    
 
     # Roster URLs
     path('roster/', get_monthly_roster, name='get-monthly-roster'),

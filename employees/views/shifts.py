@@ -1,6 +1,7 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+from django.db.models import Q
 from ..models import Shift, Department
 from ..serializers import ShiftSerializer, DepartmentSerializer
 import os
@@ -11,12 +12,17 @@ def shift_list_create(request):
     if request.method == 'GET':
         department = request.query_params.get('department')
         if department and department != 'All':
-            dept_ids = [d.strip() for d in department.split(',')]
-            # Check if we have numeric IDs or names
-            if any(id.isdigit() for id in dept_ids):
-                shifts = Shift.objects.filter(departments__id__in=dept_ids).distinct()
-            else:
-                shifts = Shift.objects.filter(departments__name__in=dept_ids).distinct()
+            dept_keys = [d.strip() for d in department.split(',')]
+            numeric_ids = [k for k in dept_keys if k.isdigit()]
+            names = [k for k in dept_keys if not k.isdigit()]
+            
+            q_objects = Q()
+            if numeric_ids:
+                q_objects |= Q(departments__id__in=numeric_ids)
+            if names:
+                q_objects |= Q(departments__name__in=names)
+                
+            shifts = Shift.objects.filter(q_objects).distinct()
         else:
             shifts = Shift.objects.all()
             
@@ -58,10 +64,16 @@ def department_list_create(request):
         dept_ids = request.query_params.get('department')
         if dept_ids and dept_ids != 'All':
             id_list = [d.strip() for d in dept_ids.split(',')]
-            if any(id.isdigit() for id in id_list):
-                departments = Department.objects.filter(id__in=id_list)
-            else:
-                departments = Department.objects.filter(name__in=id_list)
+            numeric_ids = [i for i in id_list if i.isdigit()]
+            names = [i for i in id_list if not i.isdigit()]
+            
+            q_objects = Q()
+            if numeric_ids:
+                q_objects |= Q(id__in=numeric_ids)
+            if names:
+                q_objects |= Q(name__in=names)
+            
+            departments = Department.objects.filter(q_objects)
         else:
             departments = Department.objects.all()
         serializer = DepartmentSerializer(departments, many=True)
@@ -189,19 +201,26 @@ def assign_shift(request):
                  return Response({"error": "employee_id and date are required for all items"}, status=status.HTTP_400_BAD_REQUEST)
 
             try:
+                # 🛠 Get or Create Employee for Global/Local Roster Integrity
+                employee, _ = Employee.objects.get_or_create(
+                    employee_id=employee_id,
+                    defaults={'name': item.get('name', employee_id)}
+                )
+
                 if not shift_id:
-                    EmployeeShiftSchedule.objects.filter(employee_id=employee_id, date=date).delete()
+                    EmployeeShiftSchedule.objects.filter(employee=employee, date=date).delete()
                 else:
                     EmployeeShiftSchedule.objects.update_or_create(
-                        employee_id=employee_id,
+                        employee=employee,
                         date=date,
-                        defaults={'shift_id': shift_id}
+                        defaults={'shift': Shift.objects.get(id=shift_id)}
                     )
             except Exception as e:
-                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": f"Error with employee {employee_id}: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
         return Response({"message": "Bulk assignment successful"}, status=status.HTTP_200_OK)
 
     employee_id = request.data.get('employee_id')
+    name = request.data.get('name', employee_id)
     shift_id = request.data.get('shift_id')
     date = request.data.get('date')
 
@@ -209,16 +228,21 @@ def assign_shift(request):
          return Response({"error": "employee_id and date are required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        # If shift_id is None or empty, delete the assignment (Clear/Off)
+        # Get or Create local employee record
+        employee, _ = Employee.objects.get_or_create(
+            employee_id=employee_id,
+            defaults={'name': name}
+        )
+
+        # Handle Shift Assignment
         if not shift_id:
-            EmployeeShiftSchedule.objects.filter(employee_id=employee_id, date=date).delete()
+            EmployeeShiftSchedule.objects.filter(employee=employee, date=date).delete()
             return Response({"message": "Shift assignment cleared"}, status=status.HTTP_200_OK)
 
-        # Otherwise update or create
         schedule, created = EmployeeShiftSchedule.objects.update_or_create(
-            employee_id=employee_id,
+            employee=employee,
             date=date,
-            defaults={'shift_id': shift_id}
+            defaults={'shift': Shift.objects.get(id=shift_id)}
         )
         serializer = EmployeeShiftScheduleSerializer(schedule)
         return Response(serializer.data, status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED)

@@ -290,9 +290,16 @@ def import_roster_xlsx(request):
             if not emp_id or emp_id == 'nan': continue
             
             try:
-                employee = Employee.objects.get(employee_id=emp_id)
-            except Employee.DoesNotExist:
-                errors.append(f"Employee {emp_id} not found")
+                # 🚀 Ensure Employee exists locally (Global Support)
+                emp_name = str(row.get('Employee Name', emp_id)).strip()
+                if not emp_name or emp_name == 'nan': emp_name = emp_id
+                
+                employee, _ = Employee.objects.get_or_create(
+                    employee_id=emp_id,
+                    defaults={'name': emp_name}
+                )
+            except Exception as e:
+                errors.append(f"Error creating employee {emp_id}: {str(e)}")
                 continue
 
             for col in df.columns:
