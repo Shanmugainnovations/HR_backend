@@ -107,23 +107,30 @@ def department_detail(request, pk):
 
 @api_view(['GET'])
 def get_monthly_roster(request):
+    from_date_str = request.query_params.get('from_date')
+    to_date_str = request.query_params.get('to_date')
     month_str = request.query_params.get('month') # expected format YYYY-MM
     department = request.query_params.get('department') # Optional
 
-    if not month_str:
-        return Response({"error": "Month parameter (YYYY-MM) is required"}, status=status.HTTP_400_BAD_REQUEST)
-    
-    try:
-        year, month = map(int, month_str.split('-'))
-    except ValueError:
-        return Response({"error": "Invalid format. Use YYYY-MM"}, status=status.HTTP_400_BAD_REQUEST)
-
     import calendar
-    from datetime import date
-    
-    _, last_day = calendar.monthrange(year, month)
-    start_date = date(year, month, 1)
-    end_date = date(year, month, last_day)
+    from datetime import date, datetime
+
+    if from_date_str and to_date_str:
+        try:
+            start_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+    elif month_str:
+        try:
+            year, month = map(int, month_str.split('-'))
+            _, last_day = calendar.monthrange(year, month)
+            start_date = date(year, month, 1)
+            end_date = date(year, month, last_day)
+        except ValueError:
+            return Response({"error": "Invalid month format. Use YYYY-MM"}, status=status.HTTP_400_BAD_REQUEST)
+    else:
+        return Response({"error": "Either from_date/to_date or month parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
 
     from ..models import EmployeeShiftSchedule
     from ..serializers import EmployeeShiftScheduleSerializer

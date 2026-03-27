@@ -11,6 +11,7 @@ urlpatterns = [
     path('hrregistration/', views.registration),
     path('register/', views.register_employee, name='register-employee'),
     path('employees/', views.get_all_employees_with_images, name='employee-list'),
+    path('employees/<str:employee_id>/', views.get_employee_detail, name='employee-detail'),
     path('register-device/', views.register_device_api, name='register-device'),
     path('employees_from_global/', views.get_all_employee_from_global, name='global-employees'),
     path('global-departments/', views.get_global_departments, name='global-departments'),
@@ -47,6 +48,9 @@ urlpatterns = [
     path('roster/export/', views.export_roster_csv, name='export-roster-csv'),
     path('roster/export-xlsx/', views.export_roster_xlsx, name='export-roster-xlsx'),
     path('roster/import-xlsx/', views.import_roster_xlsx, name='import-roster-xlsx'),
+    path('roster/preview-xlsx/', views.preview_roster_xlsx, name='preview-roster-xlsx'),
+    path('roster/approve-data/', views.approve_roster_data, name='approve-roster-data'),
     
     path('roster-report/', reports.roster_attendance_report, name='roster-attendance-report'),
+
 ]

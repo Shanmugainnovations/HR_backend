@@ -49,7 +49,7 @@ def get_all_employees_with_images(request):
 
         # Department Filtering
         department = request.query_params.get('department')
-        employees = Employee.objects.all().order_by("employee_id")
+        employees = Employee.objects.filter(current_face_encoding__isnull=False).order_by("employee_id")
 
         if department and department != 'All':
             db = client[global_db_name]
@@ -210,6 +210,73 @@ def disable_facial_recognition(request, employee_id):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+def get_employee_detail(request, employee_id):
+    """
+    Fetch employee details and image (preview) by employee_id.
+    - First check local SQL 'Employee' model.
+    - If not found, check Global MongoDB profiledb.
+    """
+    try:
+        # 1️⃣ Connect to MongoDB first (needed for images anyway)
+        mongo_uri = os.getenv("GLOBAL_DB_HOST")
+        hr_db_name = os.getenv("GLOBAL_DB_NAME_HR", "HR")
+        global_db_name = os.getenv("GLOBAL_DB_NAME_GLOBAL", "Global")
+        client = MongoClient(mongo_uri)
+
+        # 2️⃣ Find employee in SQL
+        emp = Employee.objects.filter(employee_id=employee_id).first()
+        
+        if emp:
+            fs_hr = gridfs.GridFS(client[hr_db_name])
+            fs_global = gridfs.GridFS(client[global_db_name])
+            base64_img = None
+            if emp.image_md5:
+                # Find image in HR then Global
+                file_obj = fs_hr.find_one({"md5": emp.image_md5})
+                if not file_obj:
+                    file_obj = fs_global.find_one({"md5": emp.image_md5})
+                if file_obj:
+                    try:
+                        img_bytes = file_obj.read()
+                        base64_img = f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
+                    except: pass
+            
+            return JsonResponse({
+                "employee_id": emp.employee_id,
+                "name": emp.name,
+                "is_active": emp.is_active,
+                "image_preview": base64_img,
+                "is_registered_face": True
+            }, status=200)
+
+        # 3️⃣ Not in SQL — Fallback to Global Profile (MongoDB)
+        db_global = client[global_db_name]
+        profile = db_global['backend_diagnostics_profile'].find_one({"employeeId": employee_id})
+        
+        if profile:
+            base_url = request.build_absolute_uri('/')[:-1]
+            profile_img_id = profile.get("profileImage")
+            preview_url = None
+            if profile_img_id:
+                preview_url = f"{base_url}/serve-file/{profile_img_id}/"
+
+            return JsonResponse({
+                "employee_id": employee_id,
+                "name": profile.get("employeeName", ""),
+                "is_active": False,
+                "image_preview": preview_url,
+                "is_registered_face": False,
+                "message": "Found in Global Profile (Face not yet registered in HR)"
+            }, status=200)
+
+        return JsonResponse({"error": "Employee not found in local records or global profiles"}, status=404)
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
 def get_all_employee_from_global(request):
     """
     Get ALL employee profiles with department & designation names resolved,
@@ -255,7 +322,14 @@ def get_all_employee_from_global(request):
                 
             query['department'] = {"$in": dept_codes}
 
+        # ✅ Fetch only face-registered IDs from SQL
+        from employees.models import Employee
+        face_registered_ids = set(Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True))
+
         global_employees = list(profiles_col.find(query))
+        
+        # ✅ Filter only those with registered faces
+        global_employees = [e for e in global_employees if str(e.get("employeeId")) in face_registered_ids]
 
         # ✅ Create SQL department map (Name -> ID)
         from ..models import Department
