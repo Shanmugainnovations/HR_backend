@@ -7,21 +7,35 @@ from django.http import HttpResponse, JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from pymongo import MongoClient
-from ..models import EmployeeShiftSchedule, Employee, Shift
+from ..models import EmployeeShiftSchedule, Employee, Shift, Department
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def export_roster_csv(request):
+    from_date_str = request.query_params.get('from_date')
+    to_date_str = request.query_params.get('to_date')
     month_str = request.query_params.get('month')
     department_filter = request.query_params.get('department') # Optional (IDs)
 
-    if not month_str:
-        return HttpResponse("Month parameter (YYYY-MM) is required", status=400)
-
-    try:
-        year, month = map(int, month_str.split('-'))
-    except ValueError:
-        return HttpResponse("Invalid format. Use YYYY-MM", status=400)
+    if from_date_str and to_date_str:
+        try:
+            start_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+            year, month = start_date.year, start_date.month
+            month_label = f"{from_date_str}_to_{to_date_str}"
+        except ValueError:
+            return HttpResponse("Invalid date format. Use YYYY-MM-DD", status=400)
+    elif month_str:
+        try:
+            year, month = map(int, month_str.split('-'))
+            _, last_day = calendar.monthrange(year, month)
+            start_date = date(year, month, 1)
+            end_date = date(year, month, last_day)
+            month_label = month_str
+        except ValueError:
+            return HttpResponse("Invalid month format. Use YYYY-MM", status=400)
+    else:
+        return HttpResponse("Either from_date/to_date or month parameter is required", status=400)
 
     # Resolve Department Filter (handle numeric IDs from frontend)
     all_names = []
@@ -79,11 +93,20 @@ def export_roster_csv(request):
                 ]
             }
         
+        # Fetch only employees with face registered from SQL
+        from employees.models import Employee
+        face_registered_ids = set(Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True))
+
         profiles = list(profiles_col.find(query))
 
         employees_data = []
         for p in profiles:
             emp_id = str(p.get("employeeId"))
+            
+            # Skip if not face registered
+            if emp_id not in face_registered_ids:
+                continue
+
             dept_code = p.get("department") # This is the ID/Code
             
             employees_data.append({
@@ -98,33 +121,38 @@ def export_roster_csv(request):
     except Exception as e:
         return HttpResponse(f"Error fetching employee data: {str(e)}", status=500)
 
-    # 2. Fetch Shift Schedules for the month
-    _, last_day = calendar.monthrange(year, month)
-    start_date = date(year, month, 1)
-    end_date = date(year, month, last_day)
+    # Date Range defined above
 
     schedules = EmployeeShiftSchedule.objects.filter(
         date__gte=start_date, 
         date__lte=end_date
     ).select_related('shift', 'employee')
 
-    # Organize schedules: {emp_id: {day: shift_name}}
+    # Organize schedules: {emp_id: {date_str: shift_name}}
     schedule_map = {}
+    date_list = []
+    curr = start_date
+    while curr <= end_date:
+        date_list.append(curr)
+        curr += timedelta(days=1)
+        if len(date_list) > 62: break
+
+    from datetime import timedelta
     for sch in schedules:
         emp_id = sch.employee.employee_id
-        day = sch.date.day
+        day_str = sch.date.strftime("%Y-%m-%d")
         if emp_id not in schedule_map:
             schedule_map[emp_id] = {}
         
         # Format: ShiftName (HH:MM-HH:MM)
         start_str = sch.shift.start_time.strftime("%H:%M")
         end_str = sch.shift.end_time.strftime("%H:%M")
-        schedule_map[emp_id][day] = f"{sch.shift.name} ({start_str}-{end_str})"
+        schedule_map[emp_id][day_str] = f"{sch.shift.name} ({start_str}-{end_str})"
 
     # 3. Generate CSV
-    filename = f"roster_{month_str}.csv"
+    filename = f"roster_{month_label}.csv"
     if all_names and len(all_names) == 1:
-        filename = f"roster_{month_str}_{all_names[0]}.csv"
+        filename = f"roster_{month_label}_{all_names[0]}.csv"
     
     response = HttpResponse(content_type='text/csv')
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
@@ -133,9 +161,9 @@ def export_roster_csv(request):
     
     # Header Row
     date_cols = []
-    for d in range(1, last_day + 1):
-        day_name = date(year, month, d).strftime("%a")
-        date_cols.append(f"{d} ({day_name})")
+    for d_date in date_list:
+        day_name = d_date.strftime("%a")
+        date_cols.append(f"{d_date.strftime('%Y-%m-%d')} ({day_name})")
         
     header = ["S.No", "Employee ID", "Employee Name", "Department"] + date_cols
     writer.writerow(header)
@@ -145,8 +173,8 @@ def export_roster_csv(request):
         row = [idx, emp['id'], emp['name'], emp['department']]
         emp_schedules = schedule_map.get(emp['id'], {})
         
-        for day in range(1, last_day + 1):
-            row.append(emp_schedules.get(day, "")) # Empty string if no shift
+        for d_date in date_list:
+            row.append(emp_schedules.get(d_date.strftime("%Y-%m-%d"), "")) # Empty string if no shift
         
         writer.writerow(row)
 
@@ -155,16 +183,30 @@ def export_roster_csv(request):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def export_roster_xlsx(request):
+    from_date_str = request.query_params.get('from_date')
+    to_date_str = request.query_params.get('to_date')
     month_str = request.query_params.get('month')
     department_filter = request.query_params.get('department')
 
-    if not month_str:
-        return HttpResponse("Month parameter (YYYY-MM) is required", status=400)
-
-    try:
-        year, month = map(int, month_str.split('-'))
-    except ValueError:
-        return HttpResponse("Invalid format. Use YYYY-MM", status=400)
+    if from_date_str and to_date_str:
+        try:
+            start_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+            year, month = start_date.year, start_date.month
+            month_label = f"{from_date_str}_to_{to_date_str}"
+        except ValueError:
+            return HttpResponse("Invalid date format. Use YYYY-MM-DD", status=400)
+    elif month_str:
+        try:
+            year, month = map(int, month_str.split('-'))
+            _, last_day = calendar.monthrange(year, month)
+            start_date = date(year, month, 1)
+            end_date = date(year, month, last_day)
+            month_label = month_str
+        except ValueError:
+            return HttpResponse("Invalid month format. Use YYYY-MM", status=400)
+    else:
+        return HttpResponse("Either from_date/to_date or month parameter is required", status=400)
 
     # Resolve Department Info
     from ..models import Department
@@ -198,84 +240,170 @@ def export_roster_xlsx(request):
             search_values = all_names + resolved_codes
             query = {"$or": [{"department": {"$in": search_values}}, {"department_id": {"$in": search_values}}, {"department_name": {"$in": search_values}}]}
         
+        # Fetch only employees with face registered from SQL
+        from employees.models import Employee
+        face_registered_ids = set(Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True))
+
         profiles = list(profiles_col.find(query))
-        employees_data = [{"id": str(p.get("employeeId")), "name": p.get("employeeName"), "department": dept_lookup.get(p.get("department"), p.get("department")) or "Unassigned"} for p in profiles]
+        employees_data = []
+        for p in profiles:
+            eid = str(p.get("employeeId"))
+            if eid in face_registered_ids:
+                employees_data.append({
+                    "id": eid, 
+                    "name": p.get("employeeName"), 
+                    "department": dept_lookup.get(p.get("department"), p.get("department")) or "Unassigned"
+                })
         employees_data.sort(key=lambda x: (x['department'], x['name']))
     except Exception as e:
         return HttpResponse(f"Error fetching data: {str(e)}", status=500)
 
     # 2. Fetch Schedules
-    _, last_day = calendar.monthrange(year, month)
-    schedules = EmployeeShiftSchedule.objects.filter(date__gte=date(year, month, 1), date__lte=date(year, month, last_day)).select_related('shift', 'employee')
+    from datetime import timedelta
+    date_list = []
+    curr = start_date
+    while curr <= end_date:
+        date_list.append(curr)
+        curr += timedelta(days=1)
+        if len(date_list) > 62: break
+
+    schedules = EmployeeShiftSchedule.objects.filter(date__gte=start_date, date__lte=end_date).select_related('shift', 'employee')
     schedule_map = {}
     for sch in schedules:
         emp_id = sch.employee.employee_id
         if emp_id not in schedule_map: schedule_map[emp_id] = {}
-        schedule_map[emp_id][sch.date.day] = sch.shift.name
+        schedule_map[emp_id][sch.date.strftime("%Y-%m-%d")] = sch.shift.name
 
     # 3. Create DataFrame
     data = []
     for emp in employees_data:
         row = {"Employee ID": emp['id'], "Employee Name": emp['name'], "Department": emp['department']}
         emp_schedules = schedule_map.get(emp['id'], {})
-        for day in range(1, last_day + 1):
-            day_name = date(year, month, day).strftime("%a")
-            col_name = f"{day} ({day_name})"
-            row[col_name] = emp_schedules.get(day, "")
+        for d_date in date_list:
+            day_name = d_date.strftime("%a")
+            col_name = f"{d_date.strftime('%Y-%m-%d')} ({day_name})"
+            row[col_name] = emp_schedules.get(d_date.strftime("%Y-%m-%d"), "")
         data.append(row)
 
     df = pd.DataFrame(data)
-    
-    filename = f"roster_{month_str}.xlsx"
+    filename = f"roster_{month_label}.xlsx"
     if all_names and len(all_names) == 1:
-        filename = f"roster_{month_str}_{all_names[0]}.xlsx"
+        filename = f"roster_{month_label}_{all_names[0]}.xlsx"
     
-    response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
     
-    sheet_name = 'Roster'
-    if all_names and len(all_names) == 1:
-        sheet_name = all_names[0][:31] # Excel limit is 31 chars
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Duty Roster"
+    
+    header_font = Font(bold=True)
+    header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+    sunday_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+    sunday_font = Font(color='9C0006', bold=True)
+
+    # Base Info Headers (Merged 3 rows)
+    base_cols = ["S.No", "Employee ID", "Employee Name", "Department"]
+    for i, col in enumerate(base_cols, 1):
+        cell = ws.cell(row=1, column=i, value=col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_align
+        cell.border = thin_border
+        ws.merge_cells(start_row=1, start_column=i, end_row=3, end_column=i)
+
+    # Date Headers (Multi-row)
+    # Row 1: Month/Year (Merged across all dates)
+    # Row 2: Date Number
+    # Row 3: Day Name
+    curr_col = len(base_cols) + 1
+    total_dates = len(date_list)
+    
+    # Merge Row 1 for Month/Year
+    header_title = f"{start_date.strftime('%B %Y')}"
+    if start_date.month != end_date.month or start_date.year != end_date.year:
+        header_title = f"{start_date.strftime('%b %Y')} - {end_date.strftime('%b %Y')}"
+    
+    title_cell = ws.cell(row=1, column=curr_col, value=header_title)
+    title_cell.font = Font(bold=True, size=12)
+    title_cell.alignment = center_align
+    title_cell.fill = header_fill
+    ws.merge_cells(start_row=1, start_column=curr_col, end_row=1, end_column=curr_col + total_dates - 1)
+
+    for i, d in enumerate(date_list):
+        c = curr_col + i
+        is_sun = d.weekday() == 6 # Sunday
         
-    with pd.ExcelWriter(response, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name=sheet_name)
-        worksheet = writer.sheets[sheet_name]
-        # Styling
-        from openpyxl.styles import PatternFill, Font
-        from openpyxl.utils import get_column_letter
+        # Row 2: Date Num
+        cell_date = ws.cell(row=2, column=c, value=d.day)
+        # Row 3: Day Name
+        cell_day = ws.cell(row=3, column=c, value=d.strftime("%a"))
+        
+        for cell in [cell_date, cell_day]:
+            cell.font = header_font
+            cell.alignment = center_align
+            cell.border = thin_border
+            if is_sun:
+                cell.fill = sunday_fill
+                cell.font = sunday_font
+            else:
+                cell.fill = header_fill
 
-        sunday_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid') # Light Red
-        sunday_font = Font(color='9C0006') # Dark Red text
+    # Data rows
+    row_idx = 4
+    for s_no, emp in enumerate(employees_data, 1):
+        ws.cell(row=row_idx, column=1, value=s_no).border = thin_border
+        ws.cell(row=row_idx, column=2, value=emp['id']).border = thin_border
+        ws.cell(row=row_idx, column=3, value=emp['name']).border = thin_border
+        ws.cell(row=row_idx, column=4, value=emp['department']).border = thin_border
+        
+        emp_schedules = schedule_map.get(emp['id'], {})
+        for i, d in enumerate(date_list):
+            c = curr_col + i
+            d_str = d.strftime("%Y-%m-%d")
+            ws.cell(row=row_idx, column=c, value=emp_schedules.get(d_str, "")).border = thin_border
+        row_idx += 1
 
-        for idx, col in enumerate(df.columns):
-            # 1. Width adjustment
-            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-            col_letter = get_column_letter(idx + 1)
-            worksheet.column_dimensions[col_letter].width = min(max_len, 30)
+    # Adjust widths
+    for i in range(1, curr_col + total_dates):
+        ws.column_dimensions[ws.cell(row=row_idx-1, column=i).column_letter].width = 12 if i >= curr_col else 18
 
-            # 2. Sunday Highlighting
-            if "(Sun)" in str(col):
-                # Header
-                worksheet[f"{col_letter}1"].fill = sunday_fill
-                worksheet[f"{col_letter}1"].font = sunday_font
-                # Data rows (1-indexed, header is 1)
-                for row_idx in range(2, len(df) + 2):
-                    cell = worksheet.cell(row=row_idx, column=idx + 1)
-                    cell.fill = sunday_fill
-
+    response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response['Content-Disposition'] = f'attachment; filename="roster_{month_label}.xlsx"'
+    wb.save(response)
     return response
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def import_roster_xlsx(request):
     file = request.FILES.get('file')
+    from_date_str = request.data.get('from_date')
+    to_date_str = request.data.get('to_date')
     month_str = request.data.get('month')
     
-    if not file or not month_str:
-        return JsonResponse({"error": "File and month are required"}, status=400)
+    if not file:
+        return JsonResponse({"error": "File is required"}, status=400)
+
+    if from_date_str and to_date_str:
+        try:
+            start_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return JsonResponse({"error": "Invalid date format"}, status=400)
+    elif month_str:
+        try:
+            year, month = map(int, month_str.split('-'))
+            _, last_day = calendar.monthrange(year, month)
+            start_date = date(year, month, 1)
+            end_date = date(year, month, last_day)
+        except ValueError:
+            return JsonResponse({"error": "Invalid month format"}, status=400)
+    else:
+        return JsonResponse({"error": "Date range or month is required"}, status=400)
 
     try:
-        year, month = map(int, month_str.split('-'))
         df = pd.read_excel(file)
         
         if "Employee ID" not in df.columns:
@@ -303,16 +431,30 @@ def import_roster_xlsx(request):
                 continue
 
             for col in df.columns:
-                # Extract Leading Digits (e.g. "1 (Mon)" -> 1)
+                # 1. Try to parse YYYY-MM-DD from column name
                 import re
-                match = re.match(r'^(\d+)', str(col))
-                if match:
-                    day = int(match.group(1))
+                target_date = None
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', str(col))
+                if date_match:
                     try:
-                        _, last_day = calendar.monthrange(year, month)
-                        if day > last_day: continue
+                        target_date = datetime.strptime(date_match.group(1), '%Y-%m-%d').date()
+                    except: pass
+                
+                # 2. Fallback to leading digits (day of month) if target_date not found
+                if not target_date:
+                    match = re.match(r'^(\d+)', str(col))
+                    if match:
+                        day = int(match.group(1))
+                        try:
+                            # Use year/month from start_date
+                            target_date = date(start_date.year, start_date.month, day)
+                        except: pass
+
+                if target_date:
+                    try:
+                        # Verify it's within our requested range (optional safety)
+                        # if target_date < start_date or target_date > end_date: continue
                         
-                        target_date = date(year, month, day)
                         val = row[col]
                         shift_name = str(val).strip().upper() if pd.notna(val) else ""
                         
@@ -330,6 +472,176 @@ def import_roster_xlsx(request):
                     except Exception as e:
                         errors.append(f"Error on day {day} for {emp_id}: {str(e)}")
 
+
         return JsonResponse({"message": f"Updated {updated_count} shifts", "errors": errors[:10]})
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def preview_roster_xlsx(request):
+    file = request.FILES.get('file')
+    from_date_str = request.data.get('from_date')
+    to_date_str = request.data.get('to_date')
+    month_str = request.data.get('month')
+    
+    if not file:
+        return JsonResponse({"error": "File is required"}, status=400)
+
+    if from_date_str and to_date_str:
+        try:
+            start_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return JsonResponse({"error": "Invalid date format"}, status=400)
+    elif month_str:
+        try:
+            year, month = map(int, month_str.split('-'))
+            _, last_day = calendar.monthrange(year, month)
+            start_date = date(year, month, 1)
+            end_date = date(year, month, last_day)
+        except ValueError:
+            return JsonResponse({"error": "Invalid month format"}, status=400)
+    else:
+        return JsonResponse({"error": "Date range or month is required"}, status=400)
+
+    try:
+        df = pd.read_excel(file)
+        
+        if "Employee ID" not in df.columns:
+            return JsonResponse({"error": "Missing 'Employee ID' column"}, status=400)
+
+        preview_data = []
+        errors = []
+        all_shifts = {s.name.upper(): s.name for s in Shift.objects.all()}
+        
+        # Mapping of department name to set of valid shift names
+        dept_shift_map = {}
+        for d in Department.objects.prefetch_related('shifts').all():
+            dept_shift_map[d.name.upper()] = {s.name.upper() for s in d.shifts.all()}
+
+        detected_dates = set()
+
+        for _, row in df.iterrows():
+            emp_id = str(row['Employee ID']).strip()
+            if not emp_id or emp_id == 'nan': continue
+            
+            emp_name = str(row.get('Employee Name', emp_id)).strip()
+            if not emp_name or emp_name == 'nan': emp_name = emp_id
+            
+            dept_name = str(row.get('Department', '')).strip()
+            dept_name_upper = dept_name.upper()
+            
+            valid_shifts_for_dept = dept_shift_map.get(dept_name_upper, set())
+            
+            emp_preview = {
+                "id": emp_id,
+                "name": emp_name,
+                "department": dept_name,
+                "shifts": {}
+            }
+            
+            for col in df.columns:
+                import re
+                target_date = None
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', str(col))
+                if date_match:
+                    try:
+                        target_date = datetime.strptime(date_match.group(1), '%Y-%m-%d').date()
+                    except: pass
+                
+                if not target_date:
+                    match = re.match(r'^(\d+)', str(col))
+                    if match:
+                        day = int(match.group(1))
+                        try:
+                            target_date = date(start_date.year, start_date.month, day)
+                        except: pass
+
+                if target_date:
+                    date_str = target_date.strftime("%Y-%m-%d")
+                    detected_dates.add(date_str)
+                    try:
+                        val = row[col]
+                        shift_name = str(val).strip().upper() if pd.notna(val) else ""
+                        
+                        if shift_name:
+                            # Global existence check
+                            exists_globally = shift_name in all_shifts
+                            
+                            # Department-based check
+                            # If the department is not found in shift config, we only use global check
+                            # But if the department IS configured, we must match its shifts.
+                            is_valid = exists_globally
+                            if dept_name_upper in dept_shift_map:
+                                is_valid = shift_name in valid_shifts_for_dept
+                            
+                            emp_preview["shifts"][date_str] = {
+                                "name": all_shifts.get(shift_name, str(val).strip()),
+                                "is_valid": is_valid
+                            }
+                            if not is_valid:
+                                if not exists_globally:
+                                    errors.append(f"Shift '{shift_name}' not found in global config.")
+                                else:
+                                    errors.append(f"Shift '{shift_name}' is not configured for department '{dept_name}'.")
+                    except Exception as e:
+                        errors.append(f"Error on {target_date} for {emp_id}: {str(e)}")
+            
+            preview_data.append(emp_preview)
+
+        sorted_headers = sorted(list(detected_dates))
+        return JsonResponse({
+            "preview": preview_data,
+            "headers": sorted_headers,
+            "errors": errors[:20],
+            "total_employees": len(preview_data),
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def approve_roster_data(request):
+    data = request.data.get('preview')
+    if not data:
+        return JsonResponse({"error": "No data found"}, status=400)
+    
+    all_shifts = {s.name.upper(): s for s in Shift.objects.all()}
+    updated_count = 0
+    errors = []
+
+    for emp_data in data:
+        emp_id = emp_data.get('id')
+        emp_name = emp_data.get('name')
+        shifts = emp_data.get('shifts', {})
+
+        if not emp_id: continue
+        
+        try:
+            employee, _ = Employee.objects.get_or_create(
+                employee_id=emp_id,
+                defaults={'name': emp_name or emp_id}
+            )
+        except Exception as e:
+            errors.append(f"Error creating/fetching employee {emp_id}: {str(e)}")
+            continue
+
+        for date_str, shift_info in shifts.items():
+            shift_name = shift_info.get('name', '').strip().upper()
+            try:
+                target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                if not shift_name:
+                    EmployeeShiftSchedule.objects.filter(employee=employee, date=target_date).delete()
+                elif shift_name in all_shifts:
+                    EmployeeShiftSchedule.objects.update_or_create(
+                        employee=employee,
+                        date=target_date,
+                        defaults={'shift': all_shifts[shift_name]}
+                    )
+                    updated_count += 1
+                else:
+                    errors.append(f"Shift '{shift_name}' not found globally for employee {emp_id}")
+            except Exception as e:
+                errors.append(f"Error for {emp_id} on {date_str}: {str(e)}")
+
+    return JsonResponse({"message": f"Successfully updated {updated_count} shifts", "errors": errors[:10]})

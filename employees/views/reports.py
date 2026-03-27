@@ -16,15 +16,12 @@ def roster_attendance_report(request):
     Combines Shift Roster with Actual Punch timings and Total Hours.
     """
     month_str = request.query_params.get('month')
+    from_date_str = request.query_params.get('from_date')
+    to_date_str = request.query_params.get('to_date')
     department_filter = request.query_params.get('department')
     
-    if not month_str:
-        return Response({"error": "Month parameter (YYYY-MM) is required"}, status=400)
-    
-    try:
-        year, month = map(int, month_str.split('-'))
-    except ValueError:
-        return Response({"error": "Invalid format. Use YYYY-MM"}, status=400)
+    if not month_str and not (from_date_str and to_date_str):
+        return Response({"error": "Month parameter (YYYY-MM) or From-To dates are required"}, status=400)
 
     # Resolve Department Filter (handle numeric IDs from frontend)
     all_names = []
@@ -89,11 +86,20 @@ def roster_attendance_report(request):
                 ]
             }
         
+        # Fetch only employees with face registered from SQL
+        from employees.models import Employee
+        face_registered_ids = set(Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True))
+
         profiles = list(profiles_col.find(query))
 
         employees_data = {} # {emp_id: {name, department, department_id, designation}}
         for p in profiles:
             emp_id = str(p.get("employeeId"))
+            
+            # Skip if not face registered
+            if emp_id not in face_registered_ids:
+                continue
+
             dept_code = p.get("department") # This is the ID/Code
             dept_name = dept_map.get(dept_code, dept_code) or "Unassigned"
             
@@ -114,9 +120,29 @@ def roster_attendance_report(request):
         return Response([], status=200)
 
     # 2. Date Range
-    _, last_day = calendar.monthrange(year, month)
-    start_date = date(year, month, 1)
-    end_date = date(year, month, last_day)
+    if from_date_str and to_date_str:
+        try:
+            start_date = datetime.strptime(from_date_str, "%Y-%m-%d").date()
+            end_date = datetime.strptime(to_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+    elif month_str:
+        try:
+            year, month = map(int, month_str.split('-'))
+            _, last_day = calendar.monthrange(year, month)
+            start_date = date(year, month, 1)
+            end_date = date(year, month, last_day)
+        except (ValueError, TypeError):
+             return Response({"error": "Invalid month format. Use YYYY-MM"}, status=400)
+    else:
+        return Response({"error": "Date range or month is required"}, status=400)
+
+    # Pre-calculate dates for report
+    report_dates = []
+    curr = start_date
+    while curr <= end_date:
+        report_dates.append(curr)
+        curr += timedelta(days=1)
 
     # 3. Fetch Shift Schedules
     schedules = EmployeeShiftSchedule.objects.filter(
@@ -160,11 +186,7 @@ def roster_attendance_report(request):
     for emp_id in sorted_emp_ids:
         emp_info = employees_data[emp_id]
         
-        for day in range(1, last_day + 1):
-            try:
-                current_date = date(year, month, day)
-            except ValueError:
-                continue # Skip invalid days like Feb 30
+        for current_date in report_dates:
             
             key = (emp_id, current_date)
             # Tuple key for shift lookup: (emp_id, date) 
@@ -289,34 +311,137 @@ def roster_attendance_report(request):
                 "status": status
             })
 
-    if request.query_params.get('export') == 'csv':
+    # 6. Export Support
+    export_format = request.query_params.get('export')
+    
+    if export_format == 'xlsx':
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+        from django.http import HttpResponse
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Roster Attendance"
+
+        header_font = Font(bold=True)
+        header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+        center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+
+        # Base Columns
+        base_cols = ["S.No", "Employee ID", "Employee Name", "Department", "Designation"]
+        for i, col in enumerate(base_cols, 1):
+            cell = ws.cell(row=1, column=i, value=col)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_align
+            cell.border = thin_border
+            ws.merge_cells(start_row=1, start_column=i, end_row=2, end_column=i)
+
+        # Date Columns (5 per date: Shift, In, Out, Total, Late/Early)
+        curr_col = len(base_cols) + 1
+        for d in report_dates:
+            d_name = d.strftime("%a")
+            # header date label
+            date_label = f"{d.strftime('%Y-%m-%d')} ({d_name})"
+            
+            cell = ws.cell(row=1, column=curr_col, value=date_label)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_align
+            cell.border = thin_border
+            ws.merge_cells(start_row=1, start_column=curr_col, end_row=1, end_column=curr_col + 4)
+            
+            subs = ["Shift", "In", "Out", "Total", "Late/Early"]
+            for j, sub in enumerate(subs):
+                c = curr_col + j
+                sc = ws.cell(row=2, column=c, value=sub)
+                sc.font = header_font
+                sc.fill = header_fill
+                sc.alignment = center_align
+                sc.border = thin_border
+            
+            curr_col += 5
+
+        # Data rows
+        from collections import defaultdict
+        grouped_data = defaultdict(dict)
+        for item in report_data:
+            grouped_data[item['employee_id']][item['date']] = item
+
+        row_idx = 3
+        for s_no, eid in enumerate(sorted_emp_ids, 1):
+            emp_info = employees_data[eid]
+            # Info
+            ws.cell(row=row_idx, column=1, value=s_no).border = thin_border
+            ws.cell(row=row_idx, column=2, value=eid).border = thin_border
+            ws.cell(row=row_idx, column=3, value=emp_info['name']).border = thin_border
+            ws.cell(row=row_idx, column=4, value=emp_info['department']).border = thin_border
+            ws.cell(row=row_idx, column=5, value=emp_info['designation']).border = thin_border
+            
+            c_idx = 6
+            for d in report_dates:
+                d_str = d.strftime("%Y-%m-%d")
+                d_item = grouped_data[eid].get(d_str, {})
+                
+                s_name = d_item.get('shift_name', '-')
+                if s_name == "Off/Unassigned": s_name = "O(-)"
+                
+                ws.cell(row=row_idx, column=c_idx, value=s_name).border = thin_border
+                ws.cell(row=row_idx, column=c_idx+1, value=d_item.get('check_in', '-')).border = thin_border
+                ws.cell(row=row_idx, column=c_idx+2, value=d_item.get('check_out', '-')).border = thin_border
+                ws.cell(row=row_idx, column=c_idx+3, value=d_item.get('total_hours', '-')).border = thin_border
+                ws.cell(row=row_idx, column=c_idx+4, value=d_item.get('late_early_hrs', '-')).border = thin_border
+                c_idx += 5
+            row_idx += 1
+
+        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = f'attachment; filename="Roster_Attendance_Report.xlsx"'
+        wb.save(response)
+        return response
+
+    if export_format == 'flat_xlsx':
+        import pandas as pd
+        from django.http import HttpResponse
+
+        df = pd.DataFrame(report_data)
+        if not df.empty:
+            df['Day'] = df['date'].apply(lambda x: datetime.strptime(x, "%Y-%m-%d").day)
+            df['Month'] = df['date'].apply(lambda x: datetime.strptime(x, "%Y-%m-%d").strftime("%B"))
+            df['Year'] = df['date'].apply(lambda x: datetime.strptime(x, "%Y-%m-%d").year)
+            
+            # Reorder
+            df = df[['date', 'Day', 'Month', 'Year', 'employee_id', 'employee_name', 'department', 'designation', 'shift_name', 'shift_timing', 'check_in', 'check_out', 'total_hours', 'late_early_hrs', 'status']]
+            # Rename for display
+            df.columns = ['Date', 'Day', 'Month', 'Year', 'Employee ID', 'Employee Name', 'Department', 'Designation', 'Allocated Shift', 'Shift Timings', 'Check In', 'Check Out', 'Total Hours', 'Late / Early', 'Status']
+
+        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = r'attachment; filename="Roster_List_Report.xlsx"'
+        df.to_excel(response, index=False, engine='openpyxl')
+        return response
+
+    if export_format == 'csv':
         import csv
         from django.http import HttpResponse
 
         response = HttpResponse(content_type='text/csv')
-        filename = f"Roster_Actual_Report_{month_str}.csv"
+        period = f"{from_date_str}_to_{to_date_str}" if from_date_str else str(month_str)
+        filename = f"Roster_Actual_Report_{period}.csv"
         if department_filter:
-            filename = f"Roster_Actual_Report_{month_str}_{department_filter}.csv"
+            filename = f"Roster_Actual_Report_{period}_{department_filter}.csv"
             
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
 
         writer = csv.writer(response)
-        writer.writerow(['Date', 'Employee ID', 'Employee Name', 'Department', 'Designation', 'Allocated Shift', 'Shift Timings', 'Check In', 'Check Out', 'Total Hours', 'Late / Early', 'Status'])
+        writer.writerow(['Date', 'Day', 'Month', 'Year', 'Employee ID', 'Employee Name', 'Department', 'Designation', 'Allocated Shift', 'Shift Timings', 'Check In', 'Check Out', 'Total Hours', 'Late / Early', 'Status'])
 
         for row in report_data:
+            d_dt = datetime.strptime(row['date'], "%Y-%m-%d")
             writer.writerow([
-                row['date'],
-                row['employee_id'],
-                row['employee_name'],
-                row['department'],
-                row['designation'],
-                row['shift_name'],
-                row['shift_timing'],
-                row['check_in'],
-                row['check_out'],
-                row['total_hours'],
-                row['late_early_hrs'],
-                row['status']
+                row['date'], d_dt.day, d_dt.strftime("%B"), d_dt.year,
+                row['employee_id'], row['employee_name'], row['department'], row['designation'],
+                row['shift_name'], row['shift_timing'], row['check_in'], row['check_out'], row['total_hours'],
+                row['late_early_hrs'], row['status']
             ])
         
         return response

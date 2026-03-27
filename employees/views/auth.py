@@ -112,6 +112,12 @@ def registration(request):
             device = data.get('device')
             fingerprint = data.get('fingerprint')
 
+            # Lookup device label if fingerprint is provided but device label is empty
+            if fingerprint and not device:
+                device_doc = allowed_devices_col.find_one({"fingerprint": fingerprint})
+                if device_doc:
+                    device = device_doc.get("label", "")
+
             # 🔴 Validation
             if not name or not password:
                 return Response({"error": "Name & Password required"}, status=400)
@@ -175,6 +181,14 @@ def registration(request):
                 if password != confirm_password:
                     return Response({"error": "Passwords do not match"}, status=400)
                 update_data["password"] = password
+
+            # Lookup device label if fingerprint is provided (or changed) but device is empty
+            fingerprint = update_data.get('fingerprint')
+            device = update_data.get('device')
+            if fingerprint and not device:
+                device_doc = allowed_devices_col.find_one({"fingerprint": fingerprint})
+                if device_doc:
+                    update_data["device"] = device_doc.get("label", "")
 
             if not update_data:
                 return Response({"message": "No changes"}, status=200)

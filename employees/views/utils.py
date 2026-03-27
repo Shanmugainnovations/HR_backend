@@ -16,8 +16,9 @@ def save_or_update_encoding(employee_id, encoding, created_by=None, name=None, i
         # Update existing record
         emp.name = name or emp.name
         emp.update_encoding(encoding, new_image_md5=image_md5)
+        emp.is_active = True  # Always reactivate if updating face
         emp.lastmodified_by = created_by
-        emp.save(update_fields=['name', 'lastmodified_by', 'lastmodified_date', 'image_md5'])
+        emp.save(update_fields=['name', 'lastmodified_by', 'lastmodified_date', 'image_md5', 'is_active'])
 
     return emp
 
