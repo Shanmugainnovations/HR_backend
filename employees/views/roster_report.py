@@ -290,6 +290,7 @@ def export_roster_xlsx(request):
     if all_names and len(all_names) == 1:
         filename = f"roster_{month_label}_{all_names[0]}.xlsx"
     
+    # 3. Create Excel using openpyxl for basic styling
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
     
@@ -304,71 +305,53 @@ def export_roster_xlsx(request):
     sunday_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
     sunday_font = Font(color='9C0006', bold=True)
 
-    # Base Info Headers (Merged 3 rows)
-    base_cols = ["S.No", "Employee ID", "Employee Name", "Department"]
-    for i, col in enumerate(base_cols, 1):
-        cell = ws.cell(row=1, column=i, value=col)
+    # 1-Row Header with Full Date
+    date_cols = []
+    for d_date in date_list:
+        day_name = d_date.strftime("%a")
+        date_cols.append(f"{d_date.strftime('%Y-%m-%d')} ({day_name})")
+        
+    header = ["S.No", "Employee ID", "Employee Name", "Department"] + date_cols
+    
+    # Write Header
+    for i, col_name in enumerate(header, 1):
+        cell = ws.cell(row=1, column=i, value=col_name)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = center_align
         cell.border = thin_border
-        ws.merge_cells(start_row=1, start_column=i, end_row=3, end_column=i)
-
-    # Date Headers (Multi-row)
-    # Row 1: Month/Year (Merged across all dates)
-    # Row 2: Date Number
-    # Row 3: Day Name
-    curr_col = len(base_cols) + 1
-    total_dates = len(date_list)
-    
-    # Merge Row 1 for Month/Year
-    header_title = f"{start_date.strftime('%B %Y')}"
-    if start_date.month != end_date.month or start_date.year != end_date.year:
-        header_title = f"{start_date.strftime('%b %Y')} - {end_date.strftime('%b %Y')}"
-    
-    title_cell = ws.cell(row=1, column=curr_col, value=header_title)
-    title_cell.font = Font(bold=True, size=12)
-    title_cell.alignment = center_align
-    title_cell.fill = header_fill
-    ws.merge_cells(start_row=1, start_column=curr_col, end_row=1, end_column=curr_col + total_dates - 1)
-
-    for i, d in enumerate(date_list):
-        c = curr_col + i
-        is_sun = d.weekday() == 6 # Sunday
         
-        # Row 2: Date Num
-        cell_date = ws.cell(row=2, column=c, value=d.day)
-        # Row 3: Day Name
-        cell_day = ws.cell(row=3, column=c, value=d.strftime("%a"))
-        
-        for cell in [cell_date, cell_day]:
-            cell.font = header_font
-            cell.alignment = center_align
-            cell.border = thin_border
-            if is_sun:
-                cell.fill = sunday_fill
-                cell.font = sunday_font
-            else:
-                cell.fill = header_fill
+        # Color Sundays in header
+        if "(" in col_name and "Sun" in col_name:
+            cell.fill = sunday_fill
+            cell.font = sunday_font
 
     # Data rows
-    row_idx = 4
-    for s_no, emp in enumerate(employees_data, 1):
-        ws.cell(row=row_idx, column=1, value=s_no).border = thin_border
+    for row_idx, emp in enumerate(employees_data, 2):
+        ws.cell(row=row_idx, column=1, value=row_idx - 1).border = thin_border
         ws.cell(row=row_idx, column=2, value=emp['id']).border = thin_border
         ws.cell(row=row_idx, column=3, value=emp['name']).border = thin_border
         ws.cell(row=row_idx, column=4, value=emp['department']).border = thin_border
         
         emp_schedules = schedule_map.get(emp['id'], {})
         for i, d in enumerate(date_list):
-            c = curr_col + i
+            c = 5 + i
             d_str = d.strftime("%Y-%m-%d")
-            ws.cell(row=row_idx, column=c, value=emp_schedules.get(d_str, "")).border = thin_border
-        row_idx += 1
+            cell_val = emp_schedules.get(d_str, "")
+            cell = ws.cell(row=row_idx, column=c, value=cell_val)
+            cell.border = thin_border
+            
+            # Highlight Sundays in data rows too
+            if d.weekday() == 6:
+                cell.fill = sunday_fill
 
     # Adjust widths
-    for i in range(1, curr_col + total_dates):
-        ws.column_dimensions[ws.cell(row=row_idx-1, column=i).column_letter].width = 12 if i >= curr_col else 18
+    ws.column_dimensions['A'].width = 6
+    ws.column_dimensions['B'].width = 15
+    ws.column_dimensions['C'].width = 25
+    ws.column_dimensions['D'].width = 20
+    for i in range(5, 5 + len(date_list)):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = 15
 
     response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     response['Content-Disposition'] = f'attachment; filename="roster_{month_label}.xlsx"'
