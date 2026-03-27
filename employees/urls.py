@@ -11,6 +11,7 @@ urlpatterns = [
     path('hrregistration/', views.registration),
     path('register/', views.register_employee, name='register-employee'),
     path('employees/', views.get_all_employees_with_images, name='employee-list'),
+    path('employees/export-xls/', views.export_employees_xls, name='export-employees-xls'),
     path('employees/<str:employee_id>/', views.get_employee_detail, name='employee-detail'),
     path('register-device/', views.register_device_api, name='register-device'),
     path('employees_from_global/', views.get_all_employee_from_global, name='global-employees'),
