@@ -7,7 +7,8 @@ from .employee import (
     register_employee,
     encode_employee_face,
     get_employee_detail,
-    serve_file
+    serve_file,
+    export_employees_xls
 )
 from .attendance import (
     mark_attendance,

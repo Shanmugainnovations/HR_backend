@@ -8,6 +8,7 @@ from io import BytesIO
 from bson import ObjectId
 from pymongo import MongoClient
 from dotenv import load_dotenv
+import pandas as pd
 
 from django.shortcuts import get_object_or_404
 from django.http import JsonResponse, HttpResponse, Http404
@@ -126,6 +127,7 @@ def get_all_employees_with_images(request):
                 "image_md5": emp.image_md5,
                 "department": dept_name,
                 "department_id": sql_dept_id, # Return SQL ID
+                "has_global_profile": str(emp.employee_id) in profile_map,
                 "created_date": emp.created_date,
                 "lastmodified_date": emp.lastmodified_date,
                 "image_preview": base64_img,
@@ -555,3 +557,67 @@ def serve_file(request, file_id):
 
     except Exception as e:
         raise Http404(f"File not found or invalid: {str(e)}")
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def export_employees_xls(request):
+    """
+    Export all employees with face recognition status, global profile status, 
+    and department info to an Excel file.
+    """
+    try:
+        # 1️⃣ Fetch all employees
+        employees = Employee.objects.all().order_by("employee_id")
+        
+        # 2️⃣ Connect to Global MongoDB for profiles and departments
+        mongo_uri = os.getenv("GLOBAL_DB_HOST")
+        global_db_name = os.getenv("GLOBAL_DB_NAME_GLOBAL", "Global")
+        client = MongoClient(mongo_uri)
+        db_global = client[global_db_name]
+        
+        # Pre-fetch profiles and departments
+        emp_ids = [str(emp.employee_id) for emp in employees]
+        profiles = {str(p["employeeId"]): p for p in db_global['backend_diagnostics_profile'].find({"employeeId": {"$in": emp_ids}})}
+        
+        mongo_dept_map = {
+            d.get('department_code'): d.get('department_name')
+            for d in db_global['backend_diagnostics_Departments'].find()
+        }
+
+        # 3️⃣ Build list for Pandas
+        data_list = []
+        for emp in employees:
+            profile = profiles.get(str(emp.employee_id), {})
+            dept_code = profile.get("department")
+            dept_name = mongo_dept_map.get(dept_code, dept_code or "Unassigned")
+            
+            data_list.append({
+                "Employee ID": emp.employee_id,
+                "Name": emp.name,
+                "Department": dept_name,
+                "Face Registered": "Yes" if emp.current_face_encoding else "No",
+                "Face Enabled": "Active" if emp.is_active else "Disabled",
+                "Global Profile": "Available" if str(emp.employee_id) in profiles else "Not Found",
+                "Created Date": emp.created_date.strftime("%Y-%m-%d %H:%M") if emp.created_date else "",
+                "Last Modified": emp.lastmodified_date.strftime("%Y-%m-%d %H:%M") if emp.lastmodified_date else "",
+            })
+
+        # 4️⃣ Create DataFrame and Excel
+        df = pd.DataFrame(data_list)
+        
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Employees')
+        
+        output.seek(0)
+        
+        response = HttpResponse(
+            output.read(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = 'attachment; filename="Employee_List.xlsx"'
+        return response
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
