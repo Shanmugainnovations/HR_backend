@@ -91,9 +91,8 @@ def registration(request):
         # ✅ GET ALL USERS
         # ======================================================
         if request.method == 'GET':
-            users = list(users_col.find().sort('_id', -1))
-            for u in users:
-                u['id'] = str(u.pop('_id'))
+            # Use ORM to ensure we get proper integer IDs
+            users = list(Register.objects.all().order_by('-id').values())
             return Response(users, status=200)
 
         # ======================================================
@@ -114,9 +113,9 @@ def registration(request):
 
             # Lookup device label if fingerprint is provided but device label is empty
             if fingerprint and not device:
-                device_doc = allowed_devices_col.find_one({"fingerprint": fingerprint})
-                if device_doc:
-                    device = device_doc.get("label", "")
+                device_obj = AllowedDevice.objects.filter(fingerprint=fingerprint).first()
+                if device_obj:
+                    device = device_obj.label
 
             # 🔴 Validation
             if not name or not password:
@@ -125,33 +124,32 @@ def registration(request):
             if password != confirm_password:
                 return Response({"error": "Passwords do not match"}, status=400)
 
-            # 🔴 Duplicate checks (Mongo)
-            if users_col.find_one({"name": name}):
+            # 🔴 Duplicate checks (ORM)
+            if Register.objects.filter(name=name).exists():
                 return Response({"error": "User already exists"}, status=400)
 
-            if employee_id and users_col.find_one({"employee_id": employee_id}):
+            if employee_id and Register.objects.filter(employee_id=employee_id).exists():
                 return Response({"error": "Employee ID already exists"}, status=400)
 
-            if allowed_ip and users_col.find_one({"allowed_ip": allowed_ip}):
+            if allowed_ip and Register.objects.filter(allowed_ip=allowed_ip).exists():
                 return Response({"error": "IP already assigned"}, status=400)
 
-            # 🔴 Insert user
-            user_doc = {
-                "name": name,
-                "employee_id": employee_id,
-                "department": department,
-                "role": role,
-                "password": password,
-                "allowed_ip": allowed_ip,
-                "device": device,
-                "fingerprint": fingerprint
-            }
-
-            result = users_col.insert_one(user_doc)
+            # 🔴 Create user via ORM for automatic ID generation
+            user = Register.objects.create(
+                name=name,
+                employee_id=employee_id,
+                department=department,
+                role=role,
+                password=password,
+                confirmPassword=confirm_password,
+                allowed_ip=allowed_ip,
+                device=device,
+                fingerprint=fingerprint
+            )
 
             return Response({
                 "message": "User created successfully",
-                "id": str(result.inserted_id)
+                "id": user.id
             }, status=201)
 
         # ======================================================
@@ -163,7 +161,10 @@ def registration(request):
             if not user_id:
                 return Response({"error": "User ID required"}, status=400)
 
-            update_data = {}
+            try:
+                user = Register.objects.get(id=user_id)
+            except Register.DoesNotExist:
+                return Response({"error": "User not found"}, status=404)
 
             fields = [
                 "name", "employee_id", "department",
@@ -172,7 +173,7 @@ def registration(request):
 
             for f in fields:
                 if f in request.data:
-                    update_data[f] = request.data.get(f)
+                    setattr(user, f, request.data.get(f))
 
             password = request.data.get('password')
             confirm_password = request.data.get('confirmPassword')
@@ -180,27 +181,16 @@ def registration(request):
             if password:
                 if password != confirm_password:
                     return Response({"error": "Passwords do not match"}, status=400)
-                update_data["password"] = password
+                user.password = password
+                user.confirmPassword = confirm_password
 
             # Lookup device label if fingerprint is provided (or changed) but device is empty
-            fingerprint = update_data.get('fingerprint')
-            device = update_data.get('device')
-            if fingerprint and not device:
-                device_doc = allowed_devices_col.find_one({"fingerprint": fingerprint})
-                if device_doc:
-                    update_data["device"] = device_doc.get("label", "")
+            if user.fingerprint and not user.device:
+                device_obj = AllowedDevice.objects.filter(fingerprint=user.fingerprint).first()
+                if device_obj:
+                    user.device = device_obj.label
 
-            if not update_data:
-                return Response({"message": "No changes"}, status=200)
-
-            result = users_col.update_one(
-                {"_id": ObjectId(user_id)},
-                {"$set": update_data}
-            )
-
-            if result.matched_count == 0:
-                return Response({"error": "User not found"}, status=404)
-
+            user.save()
             return Response({"message": "Updated successfully"}, status=200)
 
         # ======================================================
@@ -212,12 +202,11 @@ def registration(request):
             if not user_id:
                 return Response({"error": "User ID required"}, status=400)
 
-            result = users_col.delete_one({"_id": ObjectId(user_id)})
-
-            if result.deleted_count == 0:
-                return Response({"error": "User not found"}, status=404)
-
-            return Response({"message": "Deleted successfully"}, status=200)
+            try:
+                Register.objects.filter(id=user_id).delete()
+                return Response({"message": "Deleted successfully"}, status=200)
+            except:
+                return Response({"error": "Deletion failed"}, status=500)
 
     except Exception as e:
         print("🔥 ERROR:", str(e))  # important debug
@@ -411,7 +400,7 @@ def allowed_devices(request, device_id=None):
 def register_device_api(request):
     """
     Dedicated endpoint for whitelisting a device.
-    Uses Direct MongoDB for maximum reliability.
+    Now uses Django ORM for reliable ID generation and data consistency.
     """
     label = request.data.get('label')
     fingerprint = request.data.get('fingerprint')
@@ -422,49 +411,33 @@ def register_device_api(request):
         return Response({"error": "Missing required fields (Label, Fingerprint, or Password)"}, status=400)
 
     try:
-        # 🔹 Mongo connection
-        mongo_uri = os.getenv("GLOBAL_DB_HOST")
-        db_name = os.environ.get('HR_DB_NAME', 'HR')
-        client = MongoClient(mongo_uri)
-        db = client[db_name]
-
-        allowed_devices_col = db["employees_alloweddevice"]
-        register_col = db["employees_register"]
-
-        # 1️⃣ Verification: Find user by password (or name + password if provided)
-        # Note: In production, use hashed passwords and unique usernames.
-        user_filter = {"password": password}
-        user = register_col.find_one(user_filter)
+        # 1️⃣ Verification: Find user by password (the user authorizing this device)
+        user = Register.objects.filter(password=password).first()
 
         if not user:
             return Response({"error": "Account not found for this password. Registration denied."}, status=403)
 
         # 2️⃣ Whitelist the Device (AllowedDevice)
-        allowed_devices_col.update_one(
-            {"fingerprint": fingerprint},
-            {"$set": {
+        # Using ORM to ensure 'id' is generated
+        device_obj, created = AllowedDevice.objects.update_or_create(
+            fingerprint=fingerprint,
+            defaults={
                 "label": label,
                 "ip_address": ip_address or "127.0.0.1",
-                "is_active": True,
-                "created_at": timezone.now()
-            }},
-            upsert=True
+                "is_active": True
+            }
         )
 
         # 3️⃣ Link Fingerprint to User (Register)
         # We update the SPECIFIC user record found in step 1
-        register_col.update_one(
-            {"_id": user["_id"]},
-            {"$set": {
-                "fingerprint": fingerprint,
-                "device": label,
-                "allowed_ip": ip_address or "127.0.0.1"
-            }}
-        )
+        user.fingerprint = fingerprint
+        user.device = label
+        user.allowed_ip = ip_address or "127.0.0.1"
+        user.save()
 
         return Response({
             "success": True,
-            "message": f"Device '{label}' successfully whitelisted and linked to user '{user.get('name')}'!"
+            "message": f"Device '{label}' successfully whitelisted and linked to user '{user.name}'!"
         }, status=201)
 
     except Exception as e:
