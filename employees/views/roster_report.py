@@ -571,9 +571,9 @@ def preview_roster_xlsx(request):
                             }
                             if not is_valid:
                                 if not exists_globally:
-                                    errors.append(f"Shift '{shift_name}' not found in global config.")
+                                    errors.append(f"Employee {emp_name}: Shift '{shift_name}' not found in global config on {date_str}.")
                                 else:
-                                    errors.append(f"Shift '{shift_name}' is not configured for department '{dept_name}'.")
+                                    errors.append(f"Employee {emp_name}: Shift '{shift_name}' is not configured for department '{dept_name}' on {date_str}.")
                     except Exception as e:
                         errors.append(f"Error on {target_date} for {emp_id}: {str(e)}")
             
@@ -629,7 +629,7 @@ def approve_roster_data(request):
                     )
                     updated_count += 1
                 else:
-                    errors.append(f"Shift '{shift_name}' not found globally for employee {emp_id}")
+                    errors.append(f"Employee {employee.name}: Shift '{shift_name}' not found globally on {date_str}")
             except Exception as e:
                 errors.append(f"Error for {emp_id} on {date_str}: {str(e)}")
 
