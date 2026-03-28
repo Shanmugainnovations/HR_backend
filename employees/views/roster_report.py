@@ -163,7 +163,7 @@ def export_roster_csv(request):
     date_cols = []
     for d_date in date_list:
         day_name = d_date.strftime("%a")
-        date_cols.append(f"{d_date.strftime('%Y-%m-%d')} ({day_name})")
+        date_cols.append(f"{d_date.strftime('%d/%m/%Y')} ({day_name})")
         
     header = ["S.No", "Employee ID", "Employee Name", "Department"] + date_cols
     writer.writerow(header)
@@ -281,7 +281,7 @@ def export_roster_xlsx(request):
         emp_schedules = schedule_map.get(emp['id'], {})
         for d_date in date_list:
             day_name = d_date.strftime("%a")
-            col_name = f"{d_date.strftime('%Y-%m-%d')} ({day_name})"
+            col_name = f"{d_date.strftime('%d/%m/%Y')} ({day_name})"
             row[col_name] = emp_schedules.get(d_date.strftime("%Y-%m-%d"), "")
         data.append(row)
 
@@ -309,7 +309,7 @@ def export_roster_xlsx(request):
     date_cols = []
     for d_date in date_list:
         day_name = d_date.strftime("%a")
-        date_cols.append(f"{d_date.strftime('%Y-%m-%d')} ({day_name})")
+        date_cols.append(f"{d_date.strftime('%d/%m/%Y')} ({day_name})")
         
     header = ["S.No", "Employee ID", "Employee Name", "Department"] + date_cols
     
@@ -417,10 +417,13 @@ def import_roster_xlsx(request):
                 # 1. Try to parse YYYY-MM-DD from column name
                 import re
                 target_date = None
-                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', str(col))
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})|(\d{2}/\d{2}/\d{4})', str(col))
                 if date_match:
                     try:
-                        target_date = datetime.strptime(date_match.group(1), '%Y-%m-%d').date()
+                        if date_match.group(1): # YYYY-MM-DD
+                            target_date = datetime.strptime(date_match.group(1), '%Y-%m-%d').date()
+                        else: # DD/MM/YYYY
+                            target_date = datetime.strptime(date_match.group(2), '%d/%m/%Y').date()
                     except: pass
                 
                 # 2. Fallback to leading digits (day of month) if target_date not found
@@ -527,10 +530,13 @@ def preview_roster_xlsx(request):
             for col in df.columns:
                 import re
                 target_date = None
-                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', str(col))
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})|(\d{2}/\d{2}/\d{4})', str(col))
                 if date_match:
                     try:
-                        target_date = datetime.strptime(date_match.group(1), '%Y-%m-%d').date()
+                        if date_match.group(1): # YYYY-MM-DD
+                            target_date = datetime.strptime(date_match.group(1), '%Y-%m-%d').date()
+                        else: # DD/MM/YYYY
+                            target_date = datetime.strptime(date_match.group(2), '%d/%m/%Y').date()
                     except: pass
                 
                 if not target_date:

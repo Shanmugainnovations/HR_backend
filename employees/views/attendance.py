@@ -424,7 +424,7 @@ def attendance_report_with_employee_details(request):
                 
                 df = df[['employee_id', 'employee_name', 'department', 'designation', 'Day', 'Month', 'Year', 'attendence_type', 'attendence_time']]
                 df.columns = ['Employee ID', 'Name', 'Department', 'Designation', 'Day', 'Month', 'Year', 'Punch Type', 'Timestamp']
-                df['Timestamp'] = pd.to_datetime(df['Timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                df['Timestamp'] = pd.to_datetime(df['Timestamp']).dt.strftime('%d/%m/%Y %H:%M:%S')
                 df.loc[df['Punch Type'] == 'ABSENT', 'Timestamp'] = '-'
 
             if export_mode == 'xlsx':

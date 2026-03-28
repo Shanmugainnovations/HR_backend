@@ -598,8 +598,8 @@ def export_employees_xls(request):
                 "Face Registered": "Yes" if emp.current_face_encoding else "No",
                 "Face Enabled": "Active" if emp.is_active else "Disabled",
                 "Global Profile": "Available" if str(emp.employee_id) in profiles else "Not Found",
-                "Created Date": emp.created_date.strftime("%Y-%m-%d %H:%M") if emp.created_date else "",
-                "Last Modified": emp.lastmodified_date.strftime("%Y-%m-%d %H:%M") if emp.lastmodified_date else "",
+                "Created Date": emp.created_date.strftime("%d/%m/%Y %H:%M") if emp.created_date else "",
+                "Last Modified": emp.lastmodified_date.strftime("%d/%m/%Y %H:%M") if emp.lastmodified_date else "",
             })
 
         # 4️⃣ Create DataFrame and Excel
