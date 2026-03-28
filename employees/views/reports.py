@@ -343,7 +343,7 @@ def roster_attendance_report(request):
         for d in report_dates:
             d_name = d.strftime("%a")
             # header date label
-            date_label = f"{d.strftime('%Y-%m-%d')} ({d_name})"
+            date_label = f"{d.strftime('%d/%m/%Y')} ({d_name})"
             
             cell = ws.cell(row=1, column=curr_col, value=date_label)
             cell.font = header_font
@@ -406,9 +406,11 @@ def roster_attendance_report(request):
 
         df = pd.DataFrame(report_data)
         if not df.empty:
-            df['Day'] = df['date'].apply(lambda x: datetime.strptime(x, "%Y-%m-%d").day)
-            df['Month'] = df['date'].apply(lambda x: datetime.strptime(x, "%Y-%m-%d").strftime("%B"))
-            df['Year'] = df['date'].apply(lambda x: datetime.strptime(x, "%Y-%m-%d").year)
+            # Convert date column format
+            df['date'] = df['date'].apply(lambda x: datetime.strptime(x, "%Y-%m-%d").strftime("%d/%m/%Y"))
+            df['Day'] = df['date'].apply(lambda x: datetime.strptime(x, "%d/%m/%Y").day)
+            df['Month'] = df['date'].apply(lambda x: datetime.strptime(x, "%d/%m/%Y").strftime("%B"))
+            df['Year'] = df['date'].apply(lambda x: datetime.strptime(x, "%d/%m/%Y").year)
             
             # Reorder
             df = df[['date', 'Day', 'Month', 'Year', 'employee_id', 'employee_name', 'department', 'designation', 'shift_name', 'shift_timing', 'check_in', 'check_out', 'total_hours', 'late_early_hrs', 'status']]
@@ -438,7 +440,7 @@ def roster_attendance_report(request):
         for row in report_data:
             d_dt = datetime.strptime(row['date'], "%Y-%m-%d")
             writer.writerow([
-                row['date'], d_dt.day, d_dt.strftime("%B"), d_dt.year,
+                d_dt.strftime("%d/%m/%Y"), d_dt.day, d_dt.strftime("%B"), d_dt.year,
                 row['employee_id'], row['employee_name'], row['department'], row['designation'],
                 row['shift_name'], row['shift_timing'], row['check_in'], row['check_out'], row['total_hours'],
                 row['late_early_hrs'], row['status']
