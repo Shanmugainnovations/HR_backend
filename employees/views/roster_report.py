@@ -504,7 +504,7 @@ def preview_roster_xlsx(request):
         # Mapping of department name to set of valid shift names
         dept_shift_map = {}
         for d in Department.objects.prefetch_related('shifts').all():
-            dept_shift_map[d.name.upper()] = {s.name.upper() for s in d.shifts.all()}
+            dept_shift_map[d.name.strip().upper()] = {s.name.strip().upper() for s in d.shifts.all()}
 
         detected_dates = set()
 
@@ -563,7 +563,7 @@ def preview_roster_xlsx(request):
                             # But if the department IS configured, we must match its shifts.
                             is_valid = exists_globally
                             if dept_name_upper in dept_shift_map:
-                                is_valid = shift_name in valid_shifts_for_dept
+                                is_valid = shift_name in dept_shift_map[dept_name_upper]
                             
                             emp_preview["shifts"][date_str] = {
                                 "name": all_shifts.get(shift_name, str(val).strip()),
