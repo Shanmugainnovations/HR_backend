@@ -196,23 +196,56 @@ def attendance_report_with_employee_details(request):
         # ---- Create Lookup Maps ----
         dept_map = {
             d.get('department_code'): d.get('department_name')
-            for d in departments.find() # Remove is_active filter
+            for d in departments.find()
         }
         desig_map = {
             d.get('Designation_code'): d.get('designation')
             for d in designations.find({'is_active': True})
         }
 
-        # ---- Create Employee Lookup ----
+        # ---- Department Filtering Resolution ----
+        department_filter = request.GET.get('department')
+        search_values = []
+        if department_filter and department_filter != 'All':
+            raw_ids = [d.strip() for d in department_filter.split(',')]
+            
+            # Resolve SQL IDs to names
+            from employees.models import Department as SQLDepartment
+            resolved_sql_names = list(SQLDepartment.objects.filter(id__in=[rid for rid in raw_ids if rid.isdigit()]).values_list('name', flat=True))
+            
+            query_names = raw_ids + resolved_sql_names
+            
+            # Find Mongo codes for these names/codes
+            dept_cursor = departments.find({
+                "$or": [
+                    {"department_name": {"$in": query_names}},
+                    {"department_code": {"$in": query_names}}
+                ]
+            })
+            mongo_codes = [d.get("department_code") for d in dept_cursor]
+            
+            search_values = list(set(raw_ids + query_names + mongo_codes))
+
+        # ---- Fetch Employee Lookup ----
         employee_map = {}
         # Fetch only employees with face registered from SQL
         face_registered_ids = set(Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True))
         
-        # Fetch all profiles from Mongo
-        all_profiles = list(profiles.find())
+        # Profile Query
+        profile_query = {}
+        if search_values:
+            profile_query = {
+                "$or": [
+                    {"department": {"$in": search_values}},
+                    {"department_id": {"$in": search_values}},
+                    {"department_name": {"$in": search_values}}
+                ]
+            }
+
+        # Fetch matching profiles from Mongo
+        all_profiles = list(profiles.find(profile_query))
         for emp in all_profiles:
             emp_id = str(emp.get("employeeId"))
-            # Skip if not face registered
             if emp_id not in face_registered_ids:
                 continue
                 
@@ -227,13 +260,7 @@ def attendance_report_with_employee_details(request):
 
         # ---- Prepare Result ----
         result = []
-        department_filter = request.GET.get('department')
-        
-        allowed_dept_ids = []
-        if department_filter and department_filter != 'All':
-            raw_ids = [d.strip() for d in department_filter.split(',')]
-            resolved_names = list(Department.objects.filter(id__in=[id for id in raw_ids if id.isdigit()]).values_list('name', flat=True))
-            allowed_dept_ids = raw_ids + resolved_names
+        # (Filtering now handled during population of employee_map above)
 
         # Date range for iteration (to_date was already +1 day)
         report_dates = []
@@ -257,13 +284,7 @@ def attendance_report_with_employee_details(request):
 
         for emp_id in sorted_emp_ids:
             emp_info = employee_map[emp_id]
-            emp_dept_name = emp_info.get("department")
-            emp_dept_id = emp_info.get("department_id")
-            
-            # Filter if requested
-            if allowed_dept_ids:
-                if str(emp_dept_id) not in allowed_dept_ids and emp_dept_name not in allowed_dept_ids:
-                    continue
+            # (Additional in-loop filter not needed as employee_map is already filtered)
 
             for d in report_dates:
                 key = (emp_id, d)
