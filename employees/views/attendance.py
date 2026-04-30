@@ -96,7 +96,7 @@ def mark_attendance(request):
         matched_employee = None
 
     # 4. Handle "User Not Found" (Prioritized over Spoofing)
-    if not matched_employee or best_distance > 0.4:
+    if not matched_employee or best_distance > 0.35:
         # If user is not found, we don't care if it's a spoof or not (for this specific requirement).
         # We simply return User Not Found.
         return Response({"error": "User Not Found"}, status=404)
