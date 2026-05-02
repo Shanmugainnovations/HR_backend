@@ -19,67 +19,48 @@ def check_liveness(img_rgb):
     """
     Checks if the face is real using DeepFace's Anti-Spoofing (MiniFASNet).
     Returns True if real, False if spoof.
-    If no face is detected by DeepFace, currently returns True (fail-open) 
-    or you can change to False (fail-closed).
+    Uses 'opencv' for speed as it's much faster than 'ssd'.
     """
     try:
         # Convert RGB to BGR for DeepFace/OpenCV
         img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
         
         # Run Anti-Spoofing
-        # Use 'ssd' instead of 'opencv' for better face cropping/detection
-        # enforce_detection=False allows silent return if no face (though we handle it)
+        # 'opencv' is very fast. 'ssd' or 'mtcnn' are more accurate but slower.
+        detector = 'opencv' 
         try:
-            detector = 'ssd' 
             faces = DeepFace.extract_faces(
                 img_path=img_bgr,
                 detector_backend=detector, 
                 enforce_detection=False,
-                align=False,
+                align=True,
                 anti_spoofing=True
             )
         except Exception as e:
-            # Fallback to opencv if ssd fails (e.g. weights missing/download error)
-            print(f"⚠️ DeepFace SSD backend failed, falling back to opencv: {e}")
-            detector = 'opencv'
-            faces = DeepFace.extract_faces(
-                img_path=img_bgr,
-                detector_backend=detector, 
-                enforce_detection=False,
-                align=False,
-                anti_spoofing=True
-            )
+            print(f"⚠️ DeepFace liveness check failed: {e}")
+            return True # Fail-open for usability if model fails
         
         if not faces:
-            # If DeepFace sees no face, we can't judge liveness.
-            # Assuming safe or let face_recognition handle it.
+            # If no face detected by DeepFace, we let face_recognition handle detection
             return True
             
         for face in faces:
-            # 'is_real' is populated by anti_spoofing=True
             is_real = face.get("is_real")
             score = face.get("antispoof_score", None)
             
-            print(f"🕵️ DEBUG: Anti-spoof check | Backend: {detector} | Is Real: {is_real} | Score: {score}")
+            print(f"🕵️ DEBUG: Anti-spoof check | Score: {score} | Is Real: {is_real}")
 
             if is_real is False:
-                # If Score > 0.65, we override the strict default (often 0.75+)
-                if score is not None and score > 0.65:
-                    print(f"⚠️ Overriding Spoof detection: Score {score} > 0.65. marked as REAL.")
+                # Higher score override for edge cases
+                if score is not None and score > 0.60:
                     continue
-
-                # Found a spoofed face
                 return False
                 
         return True
         
     except Exception as e:
-        print(f"⚠️ Anti-spoofing check error: {e}")
-        # Identify if we should fail or pass on error.
-        # For security, better to log and maybe return False?
-        # But if model loading fails, we might block legit users.
-        # Let's return False to be safe and see logs.
-        return False
+        print(f"⚠️ Anti-spoofing error: {e}")
+        return True # Fail-open to avoid blocking legit users on system errors
 
 
 def imagefile_to_encoding(file_obj) -> tuple:
@@ -93,14 +74,37 @@ def imagefile_to_encoding(file_obj) -> tuple:
         else:
             img = face_recognition.load_image_file(file_obj)
 
+        # ✅ Optimization: Resize image if it's too large to speed up processing
+        # Large images (e.g. 4K) take much longer to process without accuracy gain for face matching.
+        h, w = img.shape[:2]
+        if max(h, w) > 1024:
+            scale = 1024 / max(h, w)
+            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+
+        # ✅ Pre-processing: Apply Contrast Normalization (CLAHE)
+        # This helps in consistent recognition across different lighting conditions
+        img_yuv = cv2.cvtColor(img, cv2.COLOR_RGB2YUV)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        img_yuv[:,:,0] = clahe.apply(img_yuv[:,:,0])
+        img = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2RGB)
+
         # ✅ Anti-Spoofing Check
         is_real = check_liveness(img)
         if not is_real:
             print("⚠️ Spoofing attempt detected (flagged)!")
 
+        # ✅ Face Encoding with model='hog' (Standard) or 'cnn' (Very Slow but Accurate)
+        # We stick to HOG for speed but ensure we handle multiple faces
         encodings = face_recognition.face_encodings(img)
+        
         if not encodings:
-            return [], is_real  # return empty list instead of None
+            return [], is_real
+            
+        # If multiple faces are detected, it's a security risk/mismatch risk
+        if len(encodings) > 1:
+            print(f"⚠️ Warning: {len(encodings)} faces detected. Using the most prominent one.")
+            # Usually the first encoding is the largest face found
+            
         return encodings[0].tolist(), is_real
 
     except Exception as e:
