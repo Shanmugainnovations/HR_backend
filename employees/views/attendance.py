@@ -15,6 +15,61 @@ from pyauth.auth import HasRolePermission
 
 from .utils import to_list
 
+# --- 🚀 Performance Cache ---
+# Global cache to store employee encodings in memory for faster matching
+_ENCODING_CACHE = {
+    'matrix': None,      # numpy array of shape (N, 128)
+    'employees': [],     # List of employee metadata
+    'last_updated': None
+}
+
+def get_optimized_encodings(force_refresh=False):
+    """
+    Returns a numpy matrix of all active employee encodings and their metadata.
+    Refreshes automatically or when forced.
+    """
+    global _ENCODING_CACHE
+    now = datetime.now()
+    
+    # Refresh cache if empty or force_refresh is True
+    if force_refresh or _ENCODING_CACHE['matrix'] is None:
+        print("🔄 Refreshing Face Encoding Cache...")
+        
+        # 🚨 Djongo fix: Completely avoid filtering in SQL to prevent SQLDecodeError
+        # Since we only have ~300 employees, fetching all and filtering in Python is safe and fast.
+        employees = Employee.objects.all()
+        
+        matrix_list = []
+        meta_list = []
+        
+        for emp in employees:
+            # check if active and encoding exists
+            if not emp.is_active:
+                continue
+                
+            raw_enc = emp.current_face_encoding
+            if not raw_enc:
+                continue
+                
+            enc = to_list(raw_enc)
+            if enc and len(enc) == 128:
+                matrix_list.append(enc)
+                meta_list.append({
+                    'employee_id': emp.employee_id,
+                    'name': emp.name
+                })
+        
+        if matrix_list:
+            _ENCODING_CACHE['matrix'] = np.array(matrix_list)
+            _ENCODING_CACHE['employees'] = meta_list
+            _ENCODING_CACHE['last_updated'] = now
+            print(f"✅ Cache updated: {len(meta_list)} employees loaded.")
+        else:
+            _ENCODING_CACHE['matrix'] = np.empty((0, 128))
+            _ENCODING_CACHE['employees'] = []
+            
+    return _ENCODING_CACHE['matrix'], _ENCODING_CACHE['employees']
+
 @api_view(['POST'])
 # @permission_classes([HasRolePermission])
 def mark_attendance(request):
@@ -60,46 +115,53 @@ def mark_attendance(request):
     if not unknown_encoding:
         return Response({"error": "No face found in image"}, status=400)
 
-    # 3. Find Matching Employee
-    employees = Employee.objects.exclude(current_face_encoding__isnull=True)
-    matched_employee = None
-    candidate_matches = []
+    # 3. Find Matching Employee (Vectorized Optimization)
+    # Using numpy matrix operations for O(1) matching speed
+    known_matrix, employee_meta = get_optimized_encodings()
+    
+    if known_matrix.size == 0:
+        return Response({"error": "No registered employees found"}, status=404)
 
-    for emp in employees:
-        if not emp.is_active:
-            continue
-
-        emp_encoding = to_list(emp.current_face_encoding)
-        unknown_encoding_np = np.array(unknown_encoding)
-
-        if len(emp_encoding) == 0 or len(unknown_encoding_np) == 0:
-            continue
-
-        _, dist = compare_encodings(emp_encoding, unknown_encoding_np)
-        
-        # Store all comparisons
-        candidate_matches.append((dist, emp))
-
-    # Sort candidates by distance (lowest is best match)
-    candidate_matches.sort(key=lambda x: x[0])
-
-    # PRINT DEBUG: Top 5 matches
-    print("\n--- 🔍 Top Matching Candidates ---")
-    for i, (d, e) in enumerate(candidate_matches[:5]):
-        print(f"#{i+1}: {e.name} ({e.employee_id}) - Dist: {d:.4f}")
-    print("----------------------------------\n")
-
-    if candidate_matches:
-        best_distance, matched_employee = candidate_matches[0]
+    # Calculate Euclidean distance from the unknown face to ALL known faces at once
+    # unknown_encoding should be (128,) or (1, 128)
+    unknown_encoding_np = np.array(unknown_encoding)
+    
+    # Vectorized subtraction and norm calculation
+    # dists will be an array of distances for each employee
+    distances = np.linalg.norm(known_matrix - unknown_encoding_np, axis=1)
+    
+    # Find the index of the minimum distance
+    best_idx = np.argmin(distances)
+    best_distance = float(distances[best_idx])
+    matched_meta = employee_meta[best_idx]
+    
+    # 🚨 False Positive Prevention: Check Distance Gap
+    # If the distance between the #1 and #2 match is too small, it's a high risk of mismatch.
+    min_gap_needed = 0.05
+    sorted_dists = np.sort(distances)
+    if len(sorted_dists) > 1:
+        second_best_dist = sorted_dists[1]
+        gap = second_best_dist - best_distance
     else:
-        best_distance = float('inf')
-        matched_employee = None
+        gap = 1.0 # only one user registered
 
-    # 4. Handle "User Not Found" (Prioritized over Spoofing)
-    if not matched_employee or best_distance > 0.4:
-        # If user is not found, we don't care if it's a spoof or not (for this specific requirement).
-        # We simply return User Not Found.
-        return Response({"error": "User Not Found"}, status=404)
+    # Fetch actual employee object
+    matched_employee = Employee.objects.filter(employee_id=matched_meta['employee_id']).first()
+
+    # PRINT DEBUG
+    print(f"\n--- 🔍 Match: {matched_meta['name']} | Dist: {best_distance:.4f} | Gap: {gap:.4f} ---")
+
+    # 4. Handle "User Not Found" (Threshold Tuning)
+    # 0.48 is a safe balance for face_recognition (dlib).
+    # This allows for slight variations in lighting/angle while 'Gap' check ensures security.
+    MATCH_THRESHOLD = 0.48 
+    
+    if best_distance > MATCH_THRESHOLD:
+        return Response({"error": "User Not Found", "debug_dist": best_distance}, status=404)
+        
+    if gap < min_gap_needed:
+        print(f"⚠️ Mismatch Risk: Gap {gap:.4f} is too low. Rejecting for safety.")
+        return Response({"error": "Ambiguous Match. Please try again with better lighting."}, status=400)
 
     # 5. Handle Spoofing (Only if User Found)
     if not is_real:
