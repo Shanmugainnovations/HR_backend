@@ -1,7 +1,10 @@
 from datetime import datetime, timedelta
 import numpy as np
 import os
+import pytz
 from pymongo import MongoClient
+
+IST = pytz.timezone('Asia/Kolkata')
 
 from django.http import JsonResponse
 from rest_framework.decorators import api_view, permission_classes
@@ -207,7 +210,7 @@ def mark_attendance(request):
         "employee": matched_employee.employee_id,
         "name": matched_employee.name,
         "mode": att.attendence_type,
-        "timestamp": att.attendence_time,
+        "timestamp": att.attendence_time.astimezone(IST),
         "confidence": best_distance
     }, status=201)
 
@@ -334,10 +337,14 @@ def attendance_report_with_employee_details(request):
         # Group actual records by (employee_id, date)
         records_by_emp_day = {}
         for r in records:
-            d = r.attendence_time.date()
+            # Convert to IST
+            ist_time = r.attendence_time.astimezone(IST)
+            d = ist_time.date()
             key = (str(r.employee_id), d)
             if key not in records_by_emp_day:
                 records_by_emp_day[key] = []
+            
+            r.attendence_time = ist_time  # Use IST for display/export
             records_by_emp_day[key].append(r)
 
         # Iterate over ALL employees and ALL dates
@@ -367,8 +374,8 @@ def attendance_report_with_employee_details(request):
                         })
                 else:
                     # No records for this employee on this day -> Add placeholder
-                    # Use start of day as placeholder time
-                    placeholder_time = datetime.combine(d, datetime.min.time())
+                    # Use start of day as placeholder time (localized to IST)
+                    placeholder_time = IST.localize(datetime.combine(d, datetime.min.time()))
                     result.append({
                         "employee_id": emp_id,
                         "employee_name": emp_info.get("employeeName", "Unknown"),
@@ -613,7 +620,7 @@ def get_spoofing_attempts(request):
             "id": attempt.id,
             "employee_id": attempt.employee_id,
             "device_id": attempt.device_id,
-            "timestamp": attempt.timestamp,
+            "timestamp": attempt.timestamp.astimezone(IST),
             "image": attempt.image # Base64 string
         })
     return Response(data, status=200)
