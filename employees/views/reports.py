@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 import calendar
 import os
+import pytz
 from pymongo import MongoClient
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -8,6 +9,8 @@ from rest_framework.response import Response
 from django.db.models import Min, Max, F
 from django.db.models.expressions import RawSQL
 from ..models import EmployeeShiftSchedule, EmployeeAttendance, Shift
+
+IST = pytz.timezone('Asia/Kolkata')
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -168,13 +171,15 @@ def roster_attendance_report(request):
     # Process attendance: map (emp_id, date) -> list of punches
     attendance_map = {}
     for att in attendance_records:
-        d_date = att.attendence_time.date()
+        # Convert to IST for reporting
+        ist_time = att.attendence_time.astimezone(IST)
+        d_date = ist_time.date()
         key = (att.employee_id, d_date)
         
         if key not in attendance_map:
             attendance_map[key] = []
         
-        attendance_map[key].append(att.attendence_time)
+        attendance_map[key].append(ist_time)
 
     # 5. Build Final Report Data
     report_data = []
