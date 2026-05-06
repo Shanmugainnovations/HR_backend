@@ -338,7 +338,15 @@ def attendance_report_with_employee_details(request):
         records_by_emp_day = {}
         for r in records:
             # Convert to IST
-            ist_time = r.attendence_time.astimezone(IST)
+            att_time = r.attendence_time
+            if isinstance(att_time, str):
+                from dateutil import parser
+                att_time = parser.parse(att_time)
+            
+            if att_time.tzinfo is None:
+                att_time = pytz.utc.localize(att_time)
+
+            ist_time = att_time.astimezone(IST)
             d = ist_time.date()
             key = (str(r.employee_id), d)
             if key not in records_by_emp_day:
@@ -620,7 +628,7 @@ def get_spoofing_attempts(request):
             "id": attempt.id,
             "employee_id": attempt.employee_id,
             "device_id": attempt.device_id,
-            "timestamp": attempt.timestamp.astimezone(IST),
+            "timestamp": (parser.parse(attempt.timestamp) if isinstance(attempt.timestamp, str) else attempt.timestamp).astimezone(IST) if (attempt.timestamp and (isinstance(attempt.timestamp, str) or attempt.timestamp.tzinfo)) else (pytz.utc.localize(parser.parse(attempt.timestamp) if isinstance(attempt.timestamp, str) else attempt.timestamp).astimezone(IST)),
             "image": attempt.image # Base64 string
         })
     return Response(data, status=200)

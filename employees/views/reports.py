@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+from dateutil import parser
 import calendar
 import os
 import pytz
@@ -172,7 +173,14 @@ def roster_attendance_report(request):
     attendance_map = {}
     for att in attendance_records:
         # Convert to IST for reporting
-        ist_time = att.attendence_time.astimezone(IST)
+        att_time = att.attendence_time
+        if isinstance(att_time, str):
+            att_time = parser.parse(att_time)
+        
+        if att_time.tzinfo is None:
+            att_time = pytz.utc.localize(att_time)
+
+        ist_time = att_time.astimezone(IST)
         d_date = ist_time.date()
         key = (att.employee_id, d_date)
         
