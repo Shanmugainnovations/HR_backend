@@ -168,7 +168,7 @@ def mark_attendance(request):
 
     # 5. Handle Spoofing (Only if User Found)
     if not is_real:
-        print(f"🚨 DEBUG: Spoofing detected for employee {matched_employee.employee_id}!")
+        print(f"🚨 DEBUG: Spoofing detected (Liveness Check Failed) for employee {matched_employee.employee_id}!")
         
         # 🚨 Capture Spoofing Attempt
         spoofed_image_b64 = ""

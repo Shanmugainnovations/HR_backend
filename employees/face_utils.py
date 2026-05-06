@@ -26,8 +26,8 @@ def check_liveness(img_rgb):
         img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
         
         # Run Anti-Spoofing
-        # 'opencv' is very fast. 'ssd' or 'mtcnn' are more accurate but slower.
-        detector = 'opencv' 
+        # 'mtcnn' is much more robust for anti-spoofing than 'opencv'
+        detector = 'mtcnn' 
         try:
             faces = DeepFace.extract_faces(
                 img_path=img_bgr,
@@ -51,9 +51,14 @@ def check_liveness(img_rgb):
             print(f"🕵️ DEBUG: Anti-spoof check | Score: {score} | Is Real: {is_real}")
 
             if is_real is False:
-                # Higher score override for edge cases
-                if score is not None and score > 0.60:
-                    continue
+                # 🚨 Strict Enforcement: If model says spoof, we reject.
+                # Score is probability of being real. 
+                print(f"🚨 REJECTED: Anti-spoofing model flagged this as a spoof (Score: {score})")
+                return False
+            
+            # Additional check: even if is_real is True, if score is very low, flag it
+            if score is not None and score < 0.25:
+                print(f"🚨 REJECTED: Low realness score despite 'is_real' flag (Score: {score})")
                 return False
                 
         return True
