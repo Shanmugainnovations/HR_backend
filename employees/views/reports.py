@@ -11,6 +11,23 @@ from django.db.models.expressions import RawSQL
 from ..models import EmployeeShiftSchedule, EmployeeAttendance, Shift
 
 IST = pytz.timezone('Asia/Kolkata')
+# 🔥 Safe conversion function (IMPORTANT)
+def to_ist(dt):
+    if not dt:
+        return None
+
+    # If string → convert to datetime
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt)
+        except:
+            return None
+
+    # If naive datetime → make UTC
+    if dt.tzinfo is None:
+        dt = pytz.UTC.localize(dt)
+
+    return dt.astimezone(IST)
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -172,7 +189,7 @@ def roster_attendance_report(request):
     attendance_map = {}
     for att in attendance_records:
         # Convert to IST for reporting
-        ist_time = att.attendence_time.astimezone(IST)
+        ist_time = to_ist(att.attendence_time)
         d_date = ist_time.date()
         key = (att.employee_id, d_date)
         
