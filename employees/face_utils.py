@@ -82,8 +82,8 @@ def imagefile_to_encoding(file_obj) -> tuple:
         # ✅ Optimization: Resize image if it's too large to speed up processing
         # Large images (e.g. 4K) take much longer to process without accuracy gain for face matching.
         h, w = img.shape[:2]
-        if max(h, w) > 1024:
-            scale = 1024 / max(h, w)
+        if max(h, w) > 800:
+            scale = 800 / max(h, w)
             img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
         # ✅ Pre-processing: Apply Contrast Normalization (CLAHE)
@@ -93,14 +93,31 @@ def imagefile_to_encoding(file_obj) -> tuple:
         img_yuv[:,:,0] = clahe.apply(img_yuv[:,:,0])
         img = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2RGB)
 
-        # ✅ Anti-Spoofing Check
-        is_real = check_liveness(img)
+        # ✅ Optimization: Find face locations first
+        face_locations = face_recognition.face_locations(img)
+        if not face_locations:
+            return [], True # No face found
+            
+        # Extract the first face crop for liveness to avoid scanning the whole image again
+        top, right, bottom, left = face_locations[0]
+        
+        # Add margin
+        h, w = img.shape[:2]
+        margin = 30
+        t = max(0, top - margin)
+        b = min(h, bottom + margin)
+        l = max(0, left - margin)
+        r = min(w, right + margin)
+        face_crop = img[t:b, l:r]
+
+        # ✅ Anti-Spoofing Check on Cropped Face
+        is_real = check_liveness(face_crop)
         if not is_real:
             print("⚠️ Spoofing attempt detected (flagged)!")
 
         # ✅ Face Encoding with model='hog' (Standard) or 'cnn' (Very Slow but Accurate)
-        # We stick to HOG for speed but ensure we handle multiple faces
-        encodings = face_recognition.face_encodings(img)
+        # Pass known_face_locations so it skips the HOG detection step!
+        encodings = face_recognition.face_encodings(img, known_face_locations=face_locations)
         
         if not encodings:
             return [], is_real
@@ -108,7 +125,6 @@ def imagefile_to_encoding(file_obj) -> tuple:
         # If multiple faces are detected, it's a security risk/mismatch risk
         if len(encodings) > 1:
             print(f"⚠️ Warning: {len(encodings)} faces detected. Using the most prominent one.")
-            # Usually the first encoding is the largest face found
             
         return encodings[0].tolist(), is_real
 
