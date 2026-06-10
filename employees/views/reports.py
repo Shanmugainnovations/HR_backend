@@ -254,7 +254,15 @@ def roster_attendance_report(request):
 
             # Check if Absent (Shift assigned but no punches)
             if shift_obj and not punches:
-                status = "Absent"
+                # If shift is an OFF/Leave shift (start and end time are 00:00, or name implies leave)
+                is_leave_shift = (
+                    (shift_obj.start_time.strftime('%H:%M') == '00:00' and shift_obj.end_time.strftime('%H:%M') == '00:00')
+                    or shift_name.upper() in ['OFF', 'EL', 'CL', 'SL', 'ML', 'COFF', 'LEAVE', 'WEEK OFF']
+                )
+                if is_leave_shift:
+                    status = shift_name
+                else:
+                    status = "Absent"
             # Check if Week Off (No shift assigned)
             elif not shift_obj and not punches:
                 status = "Week Off/Holiday"
@@ -468,6 +476,91 @@ def roster_attendance_report(request):
                 row['late_early_hrs'], row['status']
             ])
         
+        return response
+
+    if export_format == 'summary_xlsx':
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+        from django.http import HttpResponse
+        from collections import defaultdict
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Summary Attendance"
+
+        header_font = Font(bold=True)
+        header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+        center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+
+        # Base Columns
+        base_cols = ["S.No", "Employee ID", "Employee Name", "Department", "Designation"]
+        
+        # Header Row
+        for i, col in enumerate(base_cols, 1):
+            cell = ws.cell(row=1, column=i, value=col)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_align
+            cell.border = thin_border
+
+        # Date Columns
+        for i, d in enumerate(report_dates, len(base_cols) + 1):
+            date_label = d.strftime('%d/%m/%Y')
+            cell = ws.cell(row=1, column=i, value=date_label)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_align
+            cell.border = thin_border
+
+        # Group data
+        grouped_data = defaultdict(dict)
+        for item in report_data:
+            grouped_data[item['employee_id']][item['date']] = item
+
+        # Data rows
+        row_idx = 2
+        for s_no, eid in enumerate(sorted_emp_ids, 1):
+            emp_info = employees_data[eid]
+            ws.cell(row=row_idx, column=1, value=s_no).border = thin_border
+            ws.cell(row=row_idx, column=2, value=eid).border = thin_border
+            ws.cell(row=row_idx, column=3, value=emp_info['name']).border = thin_border
+            ws.cell(row=row_idx, column=4, value=emp_info['department']).border = thin_border
+            ws.cell(row=row_idx, column=5, value=emp_info['designation']).border = thin_border
+            
+            for i, d in enumerate(report_dates, len(base_cols) + 1):
+                d_str = d.strftime("%Y-%m-%d")
+                d_item = grouped_data[eid].get(d_str, {})
+                status = d_item.get('status', 'Absent')
+                
+                # Determine abbreviation
+                abbr = '-'
+                if status == 'Present' or status in ['Late Login', 'Early Checkout', 'Late In & Early Out', 'Single Punch', 'Mismatched Punch']:
+                    abbr = 'P'
+                elif status == 'Absent' or status == 'Week Off/Holiday':
+                    # User requested: "illanan A nu kaatu" -> If not explicitly assigned an OFF/Leave, and no punch, it's A
+                    abbr = 'A'
+                else:
+                    # Should be EL, CL, SL, OFF, etc from our previous fix
+                    abbr = status
+
+                cell = ws.cell(row=row_idx, column=i, value=abbr)
+                cell.border = thin_border
+                cell.alignment = center_align
+                
+                # Colors
+                if abbr == 'P':
+                    cell.font = Font(color="10b981", bold=True)
+                elif abbr == 'A':
+                    cell.font = Font(color="ef4444", bold=True)
+                else:
+                    cell.font = Font(color="3b82f6", bold=True)
+
+            row_idx += 1
+
+        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = f'attachment; filename="Roster_Summary_Report.xlsx"'
+        wb.save(response)
         return response
 
     return Response(report_data)
