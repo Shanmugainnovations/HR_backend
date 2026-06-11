@@ -23,7 +23,6 @@ from .utils import to_list
 _ENCODING_CACHE = {
     'matrix': None,      # numpy array of shape (N, 128)
     'employees': [],     # List of employee metadata
-    'history_dict': {},  # dict mapping employee_id -> list of all valid encodings
     'last_updated': None
 }
 
@@ -45,7 +44,6 @@ def get_optimized_encodings(force_refresh=False):
         
         matrix_list = []
         meta_list = []
-        history_dict = {}
         
         for emp in employees:
             # check if active and encoding exists
@@ -63,28 +61,17 @@ def get_optimized_encodings(force_refresh=False):
                     'employee_id': emp.employee_id,
                     'name': emp.name
                 })
-                
-                # Pre-build history cache for instant Stage 2 lookup
-                all_encs = [enc]
-                if emp.face_encoding_data_history:
-                    for past_raw in emp.face_encoding_data_history:
-                        past_enc = to_list(past_raw)
-                        if past_enc and len(past_enc) == 128:
-                            all_encs.append(past_enc)
-                history_dict[emp.employee_id] = all_encs
         
         if matrix_list:
             _ENCODING_CACHE['matrix'] = np.array(matrix_list)
             _ENCODING_CACHE['employees'] = meta_list
-            _ENCODING_CACHE['history_dict'] = history_dict
             _ENCODING_CACHE['last_updated'] = now
             print(f"✅ Cache updated: {len(meta_list)} employees loaded.")
         else:
             _ENCODING_CACHE['matrix'] = np.empty((0, 128))
             _ENCODING_CACHE['employees'] = []
-            _ENCODING_CACHE['history_dict'] = {}
             
-    return _ENCODING_CACHE['matrix'], _ENCODING_CACHE['employees'], _ENCODING_CACHE['history_dict']
+    return _ENCODING_CACHE['matrix'], _ENCODING_CACHE['employees']
 
 @api_view(['POST'])
 # @permission_classes([HasRolePermission])
@@ -133,7 +120,7 @@ def mark_attendance(request):
 
     # 3. Find Matching Employee (Vectorized Optimization)
     # Using numpy matrix operations for O(1) matching speed
-    known_matrix, employee_meta, history_dict = get_optimized_encodings()
+    known_matrix, employee_meta = get_optimized_encodings()
     
     if known_matrix.size == 0:
         return Response({"error": "No registered employees found"}, status=404)
@@ -146,108 +133,38 @@ def mark_attendance(request):
     # dists will be an array of distances for each employee
     distances = np.linalg.norm(known_matrix - unknown_encoding_np, axis=1)
     
-    # --- MULTI-FACTOR TOP 5 MATCHING ---
-    MATCH_THRESHOLD = 0.55 # Slightly relaxed base threshold since we evaluate 3 factors
+    # Find the index of the minimum distance
+    best_idx = np.argmin(distances)
+    best_distance = float(distances[best_idx])
+    matched_meta = employee_meta[best_idx]
     
-    # 1. Get Top Candidates (configurable via env)
-    # np.argsort returns indices sorted by distance (lowest first)
-    top_k_env = int(os.environ.get('FACE_MATCH_TOP_K', 5))
-    top_k = min(top_k_env, len(distances))
-    top_indices = np.argsort(distances)[:top_k]
-    
-    candidates = []
-    
-    print(f"\n--- 🔍 Top {top_k} Candidates ---")
-    for idx in top_indices:
-        dist = float(distances[idx])
-        if dist > MATCH_THRESHOLD:
-            continue # Discard if completely mismatched
-            
-        meta = employee_meta[idx]
-        emp_id = meta['employee_id']
-        
-        # Factor 1: Face Match Distance Score (Max 60 points)
-        # Assuming perfect match is 0.0, worst acceptable is 0.55
-        face_score = max(0, ((MATCH_THRESHOLD - dist) / MATCH_THRESHOLD) * 60)
-        
-        # Factor 2: Expected User (Max 20 points)
-        auth_score = 0
-        if employee_id and str(emp_id) == str(employee_id):
-            auth_score = 20
-            
-        # Factor 3: Device History (Max 20 points)
-        device_score = 0
-        if device_label != "unknown_device":
-            has_used_device = EmployeeAttendance.objects.filter(employee_id=emp_id, device_id=device_label).exists()
-            if has_used_device:
-                device_score = 20
-                
-        total_score = face_score + auth_score + device_score
-        
-        candidates.append({
-            'meta': meta,
-            'distance': dist,
-            'face_score': face_score,
-            'auth_score': auth_score,
-            'device_score': device_score,
-            'total_score': total_score
-        })
-        
-        print(f"👤 {meta['name']} | Dist: {dist:.4f} | F-Score: {face_score:.1f} | A-Score: {auth_score} | D-Score: {device_score} | TOTAL: {total_score:.1f}")
-        
-    if not candidates:
-        return Response({"error": "User Not Found"}, status=404)
-        
-    # 2. Select Top Candidates Based on Total Score (configurable via env)
-    top_final_env = int(os.environ.get('FACE_MATCH_TOP_FINAL', 3))
-    candidates.sort(key=lambda x: x['total_score'], reverse=True)
-    top_3_candidates = candidates[:top_final_env]
-    
-    # --- STAGE 2: HISTORICAL COMPARISON ---
-    print(f"\n--- 🕰️ Stage 2: Historical Comparison for Top {len(top_3_candidates)} ---")
-    
-    for cand in top_3_candidates:
-        emp_id = cand['meta']['employee_id']
-        best_hist_dist = cand['distance'] # Default to the current distance
-        
-        # Fetch directly from memory instead of querying the DB! ⚡
-        all_encodings = history_dict.get(emp_id, [])
-                        
-        if all_encodings:
-            hist_matrix = np.array(all_encodings)
-            hist_distances = np.linalg.norm(hist_matrix - unknown_encoding_np, axis=1)
-            best_hist_dist = min(float(np.min(hist_distances)), best_hist_dist)
-                
-        cand['refined_distance'] = best_hist_dist
-        print(f"👤 {cand['meta']['name']} | Initial Dist: {cand['distance']:.4f} | Refined Dist: {best_hist_dist:.4f}")
-        
-    # Re-sort Top 3 by their Refined Distance (Lowest is Best)
-    top_3_candidates.sort(key=lambda x: x['refined_distance'])
-    best_candidate = top_3_candidates[0]
-    
-    best_distance = best_candidate['refined_distance']
-    matched_meta = best_candidate['meta']
-    
-    STRICT_MATCH_THRESHOLD = 0.50 # Stricter threshold for final decision
-    if best_distance > STRICT_MATCH_THRESHOLD:
-        print(f"❌ Rejected: Best refined distance {best_distance:.4f} is above threshold {STRICT_MATCH_THRESHOLD}")
-        return Response({"error": "User Not Found. Face match not confident enough."}, status=404)
-    
-    # 3. False Positive Prevention: Check Distance Gap
-    if len(top_3_candidates) > 1:
-        runner_up = top_3_candidates[1]
-        gap = runner_up['refined_distance'] - best_distance
-        print(f"⚠️ Refined Distance Gap between #1 and #2: {gap:.4f}")
-        
-        # If the top 2 faces look virtually identical to the system
-        if gap < 0.04 and runner_up['refined_distance'] < 0.55:
-            print(f"⚠️ Ambiguous Match Risk! Gap {gap:.4f} is too low, but allowing match per user request.")
-            # We no longer reject here. We trust the #1 match.
+    # 🚨 False Positive Prevention: Check Distance Gap
+    # If the distance between the #1 and #2 match is too small, it's a high risk of mismatch.
+    min_gap_needed = 0.05
+    sorted_dists = np.sort(distances)
+    if len(sorted_dists) > 1:
+        second_best_dist = sorted_dists[1]
+        gap = second_best_dist - best_distance
+    else:
+        gap = 1.0 # only one user registered
 
     # Fetch actual employee object
     matched_employee = Employee.objects.filter(employee_id=matched_meta['employee_id']).first()
 
-    print(f"🏆 FINAL WINNER: {matched_meta['name']} (Refined Dist: {best_distance:.4f})")
+    # PRINT DEBUG
+    print(f"\n--- 🔍 Match: {matched_meta['name']} | Dist: {best_distance:.4f} | Gap: {gap:.4f} ---")
+
+    # 4. Handle "User Not Found" (Threshold Tuning)
+    # 0.48 is a safe balance for face_recognition (dlib).
+    # This allows for slight variations in lighting/angle while 'Gap' check ensures security.
+    MATCH_THRESHOLD = 0.48 
+    
+    if best_distance > MATCH_THRESHOLD:
+        return Response({"error": "User Not Found", "debug_dist": best_distance}, status=404)
+        
+    if gap < min_gap_needed:
+        print(f"⚠️ Mismatch Risk: Gap {gap:.4f} is too low. Rejecting for safety.")
+        return Response({"error": "Ambiguous Match. Please try again with better lighting."}, status=400)
 
     # 5. Handle Spoofing (Only if User Found)
     if not is_real:
@@ -410,19 +327,6 @@ def attendance_report_with_employee_details(request):
         result = []
         # (Filtering now handled during population of employee_map above)
 
-        # ---- Fetch Shift Schedules for Accurate Absentee/Leave Marking ----
-        from employees.models import EmployeeShiftSchedule
-        schedules = EmployeeShiftSchedule.objects.filter(
-            date__gte=from_date.date(),
-            date__lt=to_date.date(),
-            employee_id__in=employee_map.keys()
-        ).select_related('shift')
-        
-        schedule_map = {}
-        for sch in schedules:
-            schedule_map[(sch.employee_id, sch.date)] = sch.shift
-
-
         # Date range for iteration (to_date was already +1 day)
         report_dates = []
         curr = from_date
@@ -470,20 +374,6 @@ def attendance_report_with_employee_details(request):
                         })
                 else:
                     # No records for this employee on this day -> Add placeholder
-                    # Check shift schedule to see if it's an OFF or Leave
-                    shift_obj = schedule_map.get((emp_id, d))
-                    status_type = "ABSENT"
-                    if shift_obj:
-                        is_leave_shift = (
-                            (shift_obj.start_time.strftime('%H:%M') == '00:00' and shift_obj.end_time.strftime('%H:%M') == '00:00')
-                            or shift_obj.name.upper() in ['OFF', 'EL', 'CL', 'SL', 'ML', 'COFF', 'LEAVE', 'WEEK OFF']
-                        )
-                        if is_leave_shift:
-                            status_type = shift_obj.name.upper()
-                    else:
-                        # If no shift is assigned at all, mark as WEEK OFF
-                        status_type = "WEEK OFF"
-
                     # Use start of day as placeholder time (localized to IST)
                     placeholder_time = IST.localize(datetime.combine(d, datetime.min.time()))
                     result.append({
@@ -493,7 +383,7 @@ def attendance_report_with_employee_details(request):
                         "department_id": emp_info.get("department_id"),
                         "designation": emp_info.get("designation", "N/A"),
                         "device_id": "N/A",
-                        "attendence_type": status_type,
+                        "attendence_type": "ABSENT",
                         "attendence_time": placeholder_time,
                         "confidence": 0,
                     })
