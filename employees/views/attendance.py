@@ -76,12 +76,17 @@ def get_optimized_encodings(force_refresh=False):
 @api_view(['POST'])
 # @permission_classes([HasRolePermission])
 def mark_attendance(request):
-    image_file = request.FILES.get('image')
-    image_b64 = request.data.get('image')
-    employee_id = request.data.get('auth-user-id')
+    image1_b64 = request.data.get('image1')
+    image2_b64 = request.data.get('image2')
+    image1_file = request.FILES.get('image1')
+    image2_file = request.FILES.get('image2')
     
-    unknown_encoding = []
-    is_real = True
+    # Fallback for old single-image payload
+    if not image1_b64 and not image1_file:
+        image1_b64 = request.data.get('image')
+        image1_file = request.FILES.get('image')
+
+    employee_id = request.data.get('auth-user-id')
 
     # 0. Identify Device by Fingerprint
     fingerprint = request.headers.get('X-Device-Id') or request.data.get('fingerprint')
@@ -100,71 +105,71 @@ def mark_attendance(request):
                 device_label = device_doc.get("label", "Unknown Device")
         except Exception as e:
             print(f"🚨 DEBUG: Error identifying device: {e}")
-    
 
-    # 1. Extract Encoding & Liveness
-    try:
-        if image_file:
-            unknown_encoding, is_real = imagefile_to_encoding(image_file)
-        elif image_b64:
-            unknown_encoding, is_real = base64_to_encoding(image_b64)
-        else:
-            return Response({"error": "Image is required"}, status=400)
-    except Exception as e:
-        print(f"🚨 DEBUG: Error extracting face: {e}")
-        return Response({"error": "Error processing image"}, status=400)
+    def extract_face(img_file, img_b64):
+        try:
+            if img_file:
+                return imagefile_to_encoding(img_file)
+            elif img_b64:
+                return base64_to_encoding(img_b64)
+            return None, True
+        except Exception as e:
+            print(f"🚨 DEBUG: Error extracting face: {e}")
+            return None, True
 
-    # 2. Check Face Existence
-    if not unknown_encoding:
-        return Response({"error": "No face found in image"}, status=400)
+    # 1. Extract Encoding & Liveness for both images
+    enc1, is_real1 = extract_face(image1_file, image1_b64)
+    enc2, is_real2 = extract_face(image2_file, image2_b64)
 
-    # 3. Find Matching Employee (Vectorized Optimization)
-    # Using numpy matrix operations for O(1) matching speed
-    known_matrix, employee_meta = get_optimized_encodings()
+    if not enc1 and not enc2:
+        return Response({"error": "No face found in images"}, status=400)
+
+    # 2. Find Matching Employee (Vectorized Optimization)
+    known_matrix, employee_meta, history_dict = get_optimized_encodings()
     
     if known_matrix.size == 0:
         return Response({"error": "No registered employees found"}, status=404)
 
-    # Calculate Euclidean distance from the unknown face to ALL known faces at once
-    # unknown_encoding should be (128,) or (1, 128)
-    unknown_encoding_np = np.array(unknown_encoding)
-    
-    # Vectorized subtraction and norm calculation
-    # dists will be an array of distances for each employee
-    distances = np.linalg.norm(known_matrix - unknown_encoding_np, axis=1)
-    
-    # Find the index of the minimum distance
-    best_idx = np.argmin(distances)
-    best_distance = float(distances[best_idx])
-    matched_meta = employee_meta[best_idx]
-    
-    # 🚨 False Positive Prevention: Check Distance Gap
-    # If the distance between the #1 and #2 match is too small, it's a high risk of mismatch.
-    min_gap_needed = 0.05
-    sorted_dists = np.sort(distances)
-    if len(sorted_dists) > 1:
-        second_best_dist = sorted_dists[1]
-        gap = second_best_dist - best_distance
-    else:
-        gap = 1.0 # only one user registered
+    def get_best_match(enc):
+        if not enc:
+            return None, 999.0
+        enc_np = np.array(enc)
+        distances = np.linalg.norm(known_matrix - enc_np, axis=1)
+        best_idx = np.argmin(distances)
+        return employee_meta[best_idx], float(distances[best_idx])
 
+    meta1, dist1 = get_best_match(enc1)
+    meta2, dist2 = get_best_match(enc2)
+    
+    MATCH_THRESHOLD = 0.45
+    best_distance = dist1
+    matched_meta = meta1
+    is_real = is_real1
+    
+    if meta1 and meta2:
+        if meta1['employee_id'] != meta2['employee_id']:
+            print(f"❌ Rejected: Inconsistent match ({meta1['name']} vs {meta2['name']})")
+            return Response({"error": "Face match inconsistent across frames. Please hold still and try again."}, status=400)
+        best_distance = max(dist1, dist2)
+        is_real = is_real1 and is_real2
+        matched_meta = meta1
+    elif meta1:
+        best_distance = dist1
+        matched_meta = meta1
+        is_real = is_real1
+    elif meta2:
+        best_distance = dist2
+        matched_meta = meta2
+        is_real = is_real2
+        
+    if best_distance > MATCH_THRESHOLD:
+        print(f"❌ Rejected: Best distance {best_distance:.4f} is above threshold {MATCH_THRESHOLD}")
+        return Response({"error": "User Not Found. Face match not confident enough."}, status=404)
+        
     # Fetch actual employee object
     matched_employee = Employee.objects.filter(employee_id=matched_meta['employee_id']).first()
 
-    # PRINT DEBUG
-    print(f"\n--- 🔍 Match: {matched_meta['name']} | Dist: {best_distance:.4f} | Gap: {gap:.4f} ---")
-
-    # 4. Handle "User Not Found" (Threshold Tuning)
-    # 0.48 is a safe balance for face_recognition (dlib).
-    # This allows for slight variations in lighting/angle while 'Gap' check ensures security.
-    MATCH_THRESHOLD = 0.48 
-    
-    if best_distance > MATCH_THRESHOLD:
-        return Response({"error": "User Not Found", "debug_dist": best_distance}, status=404)
-        
-    if gap < min_gap_needed:
-        print(f"⚠️ Mismatch Risk: Gap {gap:.4f} is too low. Rejecting for safety.")
-        return Response({"error": "Ambiguous Match. Please try again with better lighting."}, status=400)
+    print(f"🏆 FINAL WINNER: {matched_meta['name']} (Dist: {best_distance:.4f})")
 
     # 5. Handle Spoofing (Only if User Found)
     if not is_real:
@@ -173,11 +178,11 @@ def mark_attendance(request):
         # 🚨 Capture Spoofing Attempt
         spoofed_image_b64 = ""
         try:
-            if image_b64:
-                spoofed_image_b64 = image_b64
-            elif image_file:
-                image_file.seek(0)
-                file_content = image_file.read()
+            if image1_b64:
+                spoofed_image_b64 = image1_b64
+            elif image1_file:
+                image1_file.seek(0)
+                file_content = image1_file.read()
                 spoofed_image_b64 = base64.b64encode(file_content).decode('utf-8')
         except Exception as e:
             print(f"🚨 DEBUG: Error processing spoofed image for storage: {e}")
@@ -322,6 +327,19 @@ def attendance_report_with_employee_details(request):
                 "department_id": sql_dept_map.get(dept_name, dept_code),
                 "designation": desig_map.get(emp.get("designation"), emp.get("designation")),
             }
+            
+        # Fallback for SQL registered employees missing from Global DB
+        if not search_values or "Unassigned" in search_values:
+            registered_sql_emps = Employee.objects.filter(current_face_encoding__isnull=False)
+            for sql_emp in registered_sql_emps:
+                emp_id_str = str(sql_emp.employee_id)
+                if emp_id_str not in employee_map:
+                    employee_map[emp_id_str] = {
+                        "employeeName": sql_emp.name,
+                        "department": "Unassigned",
+                        "department_id": None,
+                        "designation": "Unassigned"
+                    }
 
         # ---- Prepare Result ----
         result = []
@@ -532,6 +550,57 @@ def attendance_report_with_employee_details(request):
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
+
+@api_view(['POST'])
+def verify_face(request):
+    """
+    Fast verification endpoint for the first frame in a dual-image sequence.
+    Returns success if a confident face match is found, otherwise fails fast.
+    """
+    image_b64 = request.data.get('image')
+    image_file = request.FILES.get('image')
+    
+    if not image_b64 and not image_file:
+        return Response({"error": "Image is required"}, status=400)
+
+    try:
+        if image_file:
+            enc, is_real = imagefile_to_encoding(image_file)
+        else:
+            enc, is_real = base64_to_encoding(image_b64)
+    except Exception as e:
+        print(f"🚨 DEBUG: Error extracting face for verify-face: {e}")
+        return Response({"error": "Error processing image"}, status=400)
+
+    if not enc:
+        return Response({"error": "No face found in image"}, status=400)
+
+    known_matrix, employee_meta, _ = get_optimized_encodings()
+    
+    if known_matrix.size == 0:
+        return Response({"error": "No registered employees found"}, status=404)
+
+    enc_np = np.array(enc)
+    distances = np.linalg.norm(known_matrix - enc_np, axis=1)
+    
+    best_idx = np.argmin(distances)
+    best_distance = float(distances[best_idx])
+    matched_meta = employee_meta[best_idx]
+    
+    MATCH_THRESHOLD = 0.50
+    if best_distance > MATCH_THRESHOLD:
+        return Response({"error": "User Not Found. Face match not confident enough."}, status=404)
+        
+    if not is_real:
+        # Spoofing detected, fail fast
+        return Response({"error": "Spoofing detected (Liveness Check Failed)"}, status=403)
+        
+    return Response({
+        "success": True, 
+        "employee_id": matched_meta['employee_id'],
+        "name": matched_meta['name']
+    }, status=200)
 
 
 @api_view(['GET'])
