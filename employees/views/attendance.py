@@ -125,7 +125,7 @@ def mark_attendance(request):
         return Response({"error": "No face found in images"}, status=400)
 
     # 2. Find Matching Employee (Vectorized Optimization)
-    known_matrix, employee_meta, history_dict = get_optimized_encodings()
+    known_matrix, employee_meta = get_optimized_encodings()
     
     if known_matrix.size == 0:
         return Response({"error": "No registered employees found"}, status=404)
@@ -576,7 +576,7 @@ def verify_face(request):
     if not enc:
         return Response({"error": "No face found in image"}, status=400)
 
-    known_matrix, employee_meta, _ = get_optimized_encodings()
+    known_matrix, employee_meta = get_optimized_encodings()
     
     if known_matrix.size == 0:
         return Response({"error": "No registered employees found"}, status=404)
