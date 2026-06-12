@@ -106,9 +106,10 @@ def roster_attendance_report(request):
                 ]
             }
         
-        # Fetch only employees with face registered from SQL
+        # Fetch all employees from SQL
         from employees.models import Employee
-        face_registered_ids = set(Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True))
+        active_employees = Employee.objects.all()
+        active_employee_ids = set(active_employees.values_list('employee_id', flat=True))
 
         profiles = list(profiles_col.find(query))
 
@@ -116,8 +117,8 @@ def roster_attendance_report(request):
         for p in profiles:
             emp_id = str(p.get("employeeId"))
             
-            # Skip if not face registered
-            if emp_id not in face_registered_ids:
+            # Skip if not in SQL DB
+            if emp_id not in active_employee_ids:
                 continue
 
             dept_code = p.get("department") # This is the ID/Code
@@ -132,6 +133,19 @@ def roster_attendance_report(request):
                 "department_id": sql_id,
                 "designation": desig_map.get(p.get("designation"), p.get("designation")) or "Unassigned"
             }
+            
+        # Fallback: Add employees that are in SQL but not in Global DB
+        # Only add them if there is no department filter, or if "Unassigned" is explicitly requested.
+        if not search_values or "Unassigned" in search_values:
+            for emp in active_employees:
+                emp_id_str = str(emp.employee_id)
+                if emp_id_str not in employees_data:
+                    employees_data[emp_id_str] = {
+                        "name": emp.name,
+                        "department": "Unassigned",
+                        "department_id": None,
+                        "designation": "Unassigned"
+                    }
         
     except Exception as e:
         return Response({"error": f"Error fetching employee data: {str(e)}"}, status=500)
@@ -201,9 +215,12 @@ def roster_attendance_report(request):
     # 5. Build Final Report Data
     report_data = []
     
-    # Sorting employees by name for display
-    # This might be slow if many employees, consider using existing pre-sorted if available or sort once.
-    sorted_emp_ids = sorted(employees_data.keys(), key=lambda eid: employees_data[eid]['name'])
+    # Sorting employees by ID for display
+    import re
+    def natural_sort_key(s):
+        return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', str(s))]
+
+    sorted_emp_ids = sorted(employees_data.keys(), key=natural_sort_key)
 
     for emp_id in sorted_emp_ids:
         emp_info = employees_data[emp_id]
@@ -232,13 +249,26 @@ def roster_attendance_report(request):
                 shift_name = shift_obj.name
                 shift_timing = f"{shift_obj.start_time.strftime('%H:%M')} - {shift_obj.end_time.strftime('%H:%M')}"
 
+            is_leave_shift = False
+            if shift_obj:
+                is_leave_shift = (
+                    (shift_obj.start_time.strftime('%H:%M') == '00:00' and shift_obj.end_time.strftime('%H:%M') == '00:00')
+                    or shift_name.upper() in ['OFF', 'EL', 'CL', 'SL', 'ML', 'COFF', 'LEAVE', 'WEEK OFF', 'PH', 'COL']
+                )
+
             if punches:
                 # Assuming sorted by time already due to query order_by
                 first_punch = punches[0]
                 last_punch = punches[-1]
                 
                 check_in_str = first_punch.strftime('%H:%M:%S')
-                status = "Present" # Basic logic
+                
+                if not shift_obj:
+                    status = "UA"
+                elif is_leave_shift:
+                    status = "W/O"
+                else:
+                    status = "Present" # Basic logic
 
                 if len(punches) > 1:
                     check_out_str = last_punch.strftime('%H:%M:%S')
@@ -247,18 +277,17 @@ def roster_attendance_report(request):
                     hours = int(total_seconds // 3600)
                     minutes = int((total_seconds % 3600) // 60)
                     total_hours_str = f"{hours}h {minutes}m"
+
+                    if status in ["UA", "W/O"] and total_seconds >= 28800:
+                        status = f"P({status})"
                 else:
                     # Only one punch
-                    status = "Single Punch"
+                    if status == "Present":
+                        status = "Single Punch"
                     total_hours_str = "0h 0m"
 
             # Check if Absent (Shift assigned but no punches)
             if shift_obj and not punches:
-                # If shift is an OFF/Leave shift (start and end time are 00:00, or name implies leave)
-                is_leave_shift = (
-                    (shift_obj.start_time.strftime('%H:%M') == '00:00' and shift_obj.end_time.strftime('%H:%M') == '00:00')
-                    or shift_name.upper() in ['OFF', 'EL', 'CL', 'SL', 'ML', 'COFF', 'LEAVE', 'WEEK OFF']
-                )
                 if is_leave_shift:
                     status = shift_name
                 else:
@@ -288,38 +317,28 @@ def roster_attendance_report(request):
                     shift_start_dt = datetime.combine(dummy_date, shift_start)
                     punch_in_dt = datetime.combine(dummy_date, first_punch_time)
                     
-                    late_minutes = 0
-                    early_minutes = 0
-
-                    if punch_in_dt > shift_start_dt + timedelta(minutes=15):
-                        status = "Late Login"
-                        late_minutes = int((punch_in_dt - shift_start_dt).total_seconds() // 60)
+                    shift_end_dt = datetime.combine(dummy_date, shift_end)
+                    if shift_end < shift_start:
+                        shift_end_dt += timedelta(days=1)
                     
-                    if last_punch_time:
-                         shift_end_dt = datetime.combine(dummy_date, shift_end)
-                         punch_out_dt = datetime.combine(dummy_date, last_punch_time)
+                    shift_duration_seconds = (shift_end_dt - shift_start_dt).total_seconds()
 
-                         # Handle night shifts
-                         if shift_end < shift_start:
-                             shift_end_dt += timedelta(days=1)
-                         if last_punch_time < first_punch_time:
-                             punch_out_dt += timedelta(days=1)
-                         
-                         if punch_out_dt < shift_end_dt - timedelta(minutes=15):
-                             if status == "Late Login":
-                                 status = "Late In & Early Out"
-                             else:
-                                 status = "Early Checkout"
-                             early_minutes = int((shift_end_dt - punch_out_dt).total_seconds() // 60)
+                    if len(punches) > 1:
+                        punch_out_dt = datetime.combine(dummy_date, last_punch_time)
+                        if last_punch_time < shift_start:
+                            punch_out_dt += timedelta(days=1)
+                            
+                        is_late_login = (punch_in_dt - shift_start_dt).total_seconds() > 600
+                        is_early_checkout = (shift_end_dt - punch_out_dt).total_seconds() > 600
 
-                    parts = []
-                    if late_minutes > 0:
-                        parts.append(f"Late: {late_minutes // 60}h {late_minutes % 60}m" if late_minutes >= 60 else f"Late: {late_minutes}m")
-                    if early_minutes > 0:
-                        parts.append(f"Early: {early_minutes // 60}h {early_minutes % 60}m" if early_minutes >= 60 else f"Early: {early_minutes}m")
-                    
-                    if parts:
-                        late_early_hrs = " | ".join(parts)
+                        if is_late_login and is_early_checkout:
+                            status = "Late In & Early Out"
+                        elif is_late_login:
+                            status = "Late Login"
+                        elif is_early_checkout:
+                            status = "EG"
+                        else:
+                            status = "Present"
 
                 except Exception as e:
                     # Keep as Present if error
@@ -535,11 +554,29 @@ def roster_attendance_report(request):
                 
                 # Determine abbreviation
                 abbr = '-'
-                if status == 'Present' or status in ['Late Login', 'Early Checkout', 'Late In & Early Out', 'Single Punch', 'Mismatched Punch']:
+                if status == 'Present' or status == 'Mismatched Punch':
                     abbr = 'P'
+                elif status == 'Late Login':
+                    abbr = 'P(LL)'
+                elif status == 'Late In & Early Out':
+                    abbr = 'LI/EO'
+                elif status == 'Early Checkout':
+                    abbr = 'EC'
+                elif status == 'Single Punch':
+                    abbr = 'SP'
+                elif status == 'EG':
+                    abbr = 'EG'
                 elif status == 'Absent' or status == 'Week Off/Holiday':
                     # User requested: "illanan A nu kaatu" -> If not explicitly assigned an OFF/Leave, and no punch, it's A
                     abbr = 'A'
+                elif status == 'WF':
+                    abbr = 'WF'
+                elif status == 'UA':
+                    abbr = 'UA'
+                elif status == 'P(UA)':
+                    abbr = 'P(UA)'
+                elif status == 'P(W/O)':
+                    abbr = 'P(W/O)'
                 else:
                     # Should be EL, CL, SL, OFF, etc from our previous fix
                     abbr = status
@@ -549,10 +586,17 @@ def roster_attendance_report(request):
                 cell.alignment = center_align
                 
                 # Colors
-                if abbr == 'P':
+                if abbr in ['P', 'P(UA)', 'P(W/O)']:
                     cell.font = Font(color="10b981", bold=True)
                 elif abbr == 'A':
                     cell.font = Font(color="ef4444", bold=True)
+                elif abbr in ['EG', 'SP', 'P(LL)']:
+                    cell.font = Font(color="f59e0b", bold=True) # Amber color
+
+                elif abbr == 'WF':
+                    cell.font = Font(color="8b5cf6", bold=True) # Purple color
+                elif abbr == 'UA':
+                    cell.font = Font(color="db2777", bold=True) # Pink color
                 else:
                     cell.font = Font(color="3b82f6", bold=True)
 

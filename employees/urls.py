@@ -25,6 +25,7 @@ urlpatterns = [
     path('get_device_info/', views.get_device_info, name="serve_file"),
     path('employees/md5/<str:image_md5>/', views.get_employee_by_md5, name='get_employee_by_md5'),
     path('mark/', views.mark_attendance, name='mark_attendance'),
+    path('verify-face/', views.verify_face, name='verify_face'),
     path('hrregistration/', views.registration, name='registration'),
     path('login/', views.login, name='login'),
     path('attendance-report/', views.attendance_report_with_employee_details, name='attendance_report'),

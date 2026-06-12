@@ -12,6 +12,7 @@ from .employee import (
 )
 from .attendance import (
     mark_attendance,
+    verify_face,
     attendance_report_with_employee_details,
     get_spoofing_attempts,
     delete_spoofing_attempts
