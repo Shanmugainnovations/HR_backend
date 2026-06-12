@@ -23,7 +23,6 @@ from .utils import to_list
 _ENCODING_CACHE = {
     'matrix': None,      # numpy array of shape (N, 128)
     'employees': [],     # List of employee metadata
-    'history_dict': {},  # dict mapping employee_id -> list of all valid encodings
     'last_updated': None
 }
 
@@ -45,7 +44,6 @@ def get_optimized_encodings(force_refresh=False):
         
         matrix_list = []
         meta_list = []
-        history_dict = {}
         
         for emp in employees:
             # check if active and encoding exists
@@ -63,28 +61,17 @@ def get_optimized_encodings(force_refresh=False):
                     'employee_id': emp.employee_id,
                     'name': emp.name
                 })
-                
-                # Pre-build history cache for instant Stage 2 lookup
-                all_encs = [enc]
-                if emp.face_encoding_data_history:
-                    for past_raw in emp.face_encoding_data_history:
-                        past_enc = to_list(past_raw)
-                        if past_enc and len(past_enc) == 128:
-                            all_encs.append(past_enc)
-                history_dict[emp.employee_id] = all_encs
         
         if matrix_list:
             _ENCODING_CACHE['matrix'] = np.array(matrix_list)
             _ENCODING_CACHE['employees'] = meta_list
-            _ENCODING_CACHE['history_dict'] = history_dict
             _ENCODING_CACHE['last_updated'] = now
             print(f"✅ Cache updated: {len(meta_list)} employees loaded.")
         else:
             _ENCODING_CACHE['matrix'] = np.empty((0, 128))
             _ENCODING_CACHE['employees'] = []
-            _ENCODING_CACHE['history_dict'] = {}
             
-    return _ENCODING_CACHE['matrix'], _ENCODING_CACHE['employees'], _ENCODING_CACHE['history_dict']
+    return _ENCODING_CACHE['matrix'], _ENCODING_CACHE['employees']
 
 @api_view(['POST'])
 # @permission_classes([HasRolePermission])
@@ -358,19 +345,6 @@ def attendance_report_with_employee_details(request):
         result = []
         # (Filtering now handled during population of employee_map above)
 
-        # ---- Fetch Shift Schedules for Accurate Absentee/Leave Marking ----
-        from employees.models import EmployeeShiftSchedule
-        schedules = EmployeeShiftSchedule.objects.filter(
-            date__gte=from_date.date(),
-            date__lt=to_date.date(),
-            employee_id__in=employee_map.keys()
-        ).select_related('shift')
-        
-        schedule_map = {}
-        for sch in schedules:
-            schedule_map[(sch.employee_id, sch.date)] = sch.shift
-
-
         # Date range for iteration (to_date was already +1 day)
         report_dates = []
         curr = from_date
@@ -418,20 +392,6 @@ def attendance_report_with_employee_details(request):
                         })
                 else:
                     # No records for this employee on this day -> Add placeholder
-                    # Check shift schedule to see if it's an OFF or Leave
-                    shift_obj = schedule_map.get((emp_id, d))
-                    status_type = "ABSENT"
-                    if shift_obj:
-                        is_leave_shift = (
-                            (shift_obj.start_time.strftime('%H:%M') == '00:00' and shift_obj.end_time.strftime('%H:%M') == '00:00')
-                            or shift_obj.name.upper() in ['OFF', 'EL', 'CL', 'SL', 'ML', 'COFF', 'LEAVE', 'WEEK OFF']
-                        )
-                        if is_leave_shift:
-                            status_type = shift_obj.name.upper()
-                    else:
-                        # If no shift is assigned at all, mark as WEEK OFF
-                        status_type = "WEEK OFF"
-
                     # Use start of day as placeholder time (localized to IST)
                     placeholder_time = IST.localize(datetime.combine(d, datetime.min.time()))
                     result.append({
@@ -441,7 +401,7 @@ def attendance_report_with_employee_details(request):
                         "department_id": emp_info.get("department_id"),
                         "designation": emp_info.get("designation", "N/A"),
                         "device_id": "N/A",
-                        "attendence_type": status_type,
+                        "attendence_type": "ABSENT",
                         "attendence_time": placeholder_time,
                         "confidence": 0,
                     })
