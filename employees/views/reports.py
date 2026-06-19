@@ -210,7 +210,7 @@ def roster_attendance_report(request):
         if key not in attendance_map:
             attendance_map[key] = []
         
-        attendance_map[key].append(ist_time)
+        attendance_map[key].append({'time': ist_time, 'type': att.attendence_type})
 
     # 5. Build Final Report Data
     report_data = []
@@ -256,12 +256,18 @@ def roster_attendance_report(request):
                     or shift_name.upper() in ['OFF', 'EL', 'CL', 'SL', 'ML', 'COFF', 'LEAVE', 'WEEK OFF', 'PH', 'COL']
                 )
 
+            check_in_dt = None
+            check_out_dt = None
+
             if punches:
-                # Assuming sorted by time already due to query order_by
-                first_punch = punches[0]
-                last_punch = punches[-1]
+                in_punches = [p['time'] for p in punches if p['type'] == 'IN']
+                out_punches = [p['time'] for p in punches if p['type'] == 'OUT']
                 
-                check_in_str = first_punch.strftime('%H:%M:%S')
+                check_in_dt = in_punches[0] if in_punches else None
+                check_out_dt = out_punches[-1] if out_punches else None
+                
+                if check_in_dt:
+                    check_in_str = check_in_dt.strftime('%H:%M:%S')
                 
                 if not shift_obj:
                     status = "UA"
@@ -270,9 +276,9 @@ def roster_attendance_report(request):
                 else:
                     status = "Present" # Basic logic
 
-                if len(punches) > 1:
-                    check_out_str = last_punch.strftime('%H:%M:%S')
-                    duration = last_punch - first_punch
+                if check_in_dt and check_out_dt and check_out_dt > check_in_dt:
+                    check_out_str = check_out_dt.strftime('%H:%M:%S')
+                    duration = check_out_dt - check_in_dt
                     total_seconds = duration.total_seconds()
                     hours = int(total_seconds // 3600)
                     minutes = int((total_seconds % 3600) // 60)
@@ -281,7 +287,10 @@ def roster_attendance_report(request):
                     if status in ["UA", "W/O"] and total_seconds >= 28800:
                         status = f"P({status})"
                 else:
-                    # Only one punch
+                    # Only one punch or missing OUT
+                    if check_out_dt and not check_in_dt:
+                        check_out_str = check_out_dt.strftime('%H:%M:%S')
+                        
                     if status == "Present":
                         status = "Single Punch"
                     total_hours_str = "0h 0m"
@@ -297,16 +306,13 @@ def roster_attendance_report(request):
                 status = "Week Off/Holiday"
             
             # Refine status based on shift timings if present and employee was present
-            if status == "Present" and shift_obj:
+            if status == "Present" and shift_obj and check_in_dt and check_out_dt:
                 try:
                     shift_start = shift_obj.start_time
                     shift_end = shift_obj.end_time
                     
-                    first_punch_time = first_punch.time()
-                    if len(punches) > 1:
-                        last_punch_time = last_punch.time()
-                    else:
-                        last_punch_time = None
+                    first_punch_time = check_in_dt.time()
+                    last_punch_time = check_out_dt.time()
 
                     # Late Login Logic (e.g., > 15 mins grace? defaulting to strict for now or 5 mins)
                     # Adding 10 mins grace for now
@@ -321,24 +327,21 @@ def roster_attendance_report(request):
                     if shift_end < shift_start:
                         shift_end_dt += timedelta(days=1)
                     
-                    shift_duration_seconds = (shift_end_dt - shift_start_dt).total_seconds()
+                    punch_out_dt = datetime.combine(dummy_date, last_punch_time)
+                    if last_punch_time < shift_start:
+                        punch_out_dt += timedelta(days=1)
+                        
+                    is_late_login = (punch_in_dt - shift_start_dt).total_seconds() > 600
+                    is_early_checkout = (shift_end_dt - punch_out_dt).total_seconds() > 600
 
-                    if len(punches) > 1:
-                        punch_out_dt = datetime.combine(dummy_date, last_punch_time)
-                        if last_punch_time < shift_start:
-                            punch_out_dt += timedelta(days=1)
-                            
-                        is_late_login = (punch_in_dt - shift_start_dt).total_seconds() > 600
-                        is_early_checkout = (shift_end_dt - punch_out_dt).total_seconds() > 600
-
-                        if is_late_login and is_early_checkout:
-                            status = "Late In & Early Out"
-                        elif is_late_login:
-                            status = "Late Login"
-                        elif is_early_checkout:
-                            status = "EG"
-                        else:
-                            status = "Present"
+                    if is_late_login and is_early_checkout:
+                        status = "Late In & Early Out"
+                    elif is_late_login:
+                        status = "Late Login"
+                    elif is_early_checkout:
+                        status = "EG"
+                    else:
+                        status = "Present"
 
                 except Exception as e:
                     # Keep as Present if error
