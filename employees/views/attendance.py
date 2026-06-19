@@ -3,6 +3,7 @@ import numpy as np
 import os
 import pytz
 from pymongo import MongoClient
+import gridfs
 
 IST = pytz.timezone('Asia/Kolkata')
 
@@ -211,12 +212,36 @@ def mark_attendance(request):
 
     print(f"✅ ATTENDANCE SUCCESS: {matched_employee.name} (ID: {matched_employee.employee_id}) | Liveness Verified: {is_real}")
 
+    # Fetch the registered image preview to display on the kiosk
+    base64_img = None
+    if matched_employee.image_md5:
+        try:
+            mongo_uri = os.environ.get("GLOBAL_DB_HOST")
+            client = MongoClient(mongo_uri)
+            
+            hr_db_name = os.environ.get("GLOBAL_DB_NAME_HR", "HR")
+            global_db_name = os.environ.get("GLOBAL_DB_NAME_GLOBAL", "Global")
+            
+            fs_hr = gridfs.GridFS(client[hr_db_name])
+            fs_global = gridfs.GridFS(client[global_db_name])
+            
+            file_obj = fs_hr.find_one({"md5": matched_employee.image_md5})
+            if not file_obj:
+                file_obj = fs_global.find_one({"md5": matched_employee.image_md5})
+                
+            if file_obj:
+                img_bytes = file_obj.read()
+                base64_img = f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
+        except Exception as e:
+            print(f"🚨 DEBUG: Error fetching registered image for preview: {e}")
+
     return Response({
         "employee": matched_employee.employee_id,
         "name": matched_employee.name,
         "mode": att.attendence_type,
         "timestamp": att.attendence_time.astimezone(IST),
-        "confidence": best_distance
+        "confidence": best_distance,
+        "registered_image": base64_img
     }, status=201)
 
 
