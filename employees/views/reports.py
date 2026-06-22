@@ -190,8 +190,9 @@ def roster_attendance_report(request):
         schedule_map[(sch.employee_id, sch.date)] = sch.shift
 
     # 4. Fetch Attendance (Grouped by Date & Employee)
-    start_dt = datetime.combine(start_date, datetime.min.time())
-    end_dt = datetime.combine(end_date, datetime.max.time())
+    # Fetch from previous day and until next day to correctly pair night shifts
+    start_dt = datetime.combine(start_date - timedelta(days=1), datetime.min.time())
+    end_dt = datetime.combine(end_date + timedelta(days=1), datetime.max.time())
     
     # Using 'attendence_time' and 'employee_id' as per model
     attendance_records = EmployeeAttendance.objects.filter(
@@ -201,16 +202,50 @@ def roster_attendance_report(request):
 
     # Process attendance: map (emp_id, date) -> list of punches
     attendance_map = {}
+    current_emp_id = None
+    current_shift_date = None
+    last_in_time = None
+    
+    from datetime import time
+    noon_time = time(12, 0)
+
     for att in attendance_records:
-        # Convert to IST for reporting
         ist_time = to_ist(att.attendence_time)
-        d_date = ist_time.date()
-        key = (att.employee_id, d_date)
+        punch_date = ist_time.date()
         
+        if current_emp_id != att.employee_id:
+            current_emp_id = att.employee_id
+            current_shift_date = None
+            last_in_time = None
+            
+        punch_type = att.attendence_type
+        assigned_date = punch_date
+        
+        if punch_type == 'IN':
+            current_shift_date = punch_date
+            last_in_time = ist_time
+            assigned_date = current_shift_date
+        elif punch_type == 'OUT':
+            if current_shift_date and last_in_time:
+                # Check if within 16 hours of the IN punch
+                if (ist_time - last_in_time).total_seconds() <= 16 * 3600:
+                    assigned_date = current_shift_date
+                else:
+                    # Too far from last IN, treat as orphaned OUT
+                    if ist_time.time() < noon_time:
+                        assigned_date = punch_date - timedelta(days=1)
+            else:
+                # Orphaned OUT
+                if ist_time.time() < noon_time:
+                    assigned_date = punch_date - timedelta(days=1)
+
+        # Only add to map if assigned_date is within our requested report_dates bounds (to avoid showing extra days)
+        # But wait, the loop iterating over report_dates will only pull what it needs. So we can just add it.
+        key = (att.employee_id, assigned_date)
         if key not in attendance_map:
             attendance_map[key] = []
         
-        attendance_map[key].append({'time': ist_time, 'type': att.attendence_type})
+        attendance_map[key].append({'time': ist_time, 'type': punch_type})
 
     # 5. Build Final Report Data
     report_data = []
