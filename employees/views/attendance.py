@@ -266,10 +266,12 @@ def attendance_report_with_employee_details(request):
             to_date = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
 
         # ---- Fetch Attendance Records ----
+        # Fetch from previous day to correctly pair night shifts
+        from_date_ext = from_date - timedelta(days=1)
         records = EmployeeAttendance.objects.filter(
-            attendence_time__gte=from_date,
+            attendence_time__gte=from_date_ext,
             attendence_time__lt=to_date
-        ).order_by('-attendence_time')
+        ).order_by('employee_id', 'attendence_time')
 
         if not records.exists():
             return Response([], status=200)
@@ -377,13 +379,45 @@ def attendance_report_with_employee_details(request):
             report_dates.append(curr.date())
             curr += timedelta(days=1)
 
-        # Group actual records by (employee_id, date)
+        # Group actual records by (employee_id, date) with Shift Date Logic
         records_by_emp_day = {}
+        
+        current_emp_id = None
+        current_shift_date = None
+        last_in_time = None
+        
+        from datetime import time
+        noon_time = time(12, 0)
+        
         for r in records:
             # Convert to IST
             ist_time = r.attendence_time.astimezone(IST)
-            d = ist_time.date()
-            key = (str(r.employee_id), d)
+            punch_date = ist_time.date()
+            
+            if current_emp_id != str(r.employee_id):
+                current_emp_id = str(r.employee_id)
+                current_shift_date = None
+                last_in_time = None
+                
+            punch_type = r.attendence_type
+            assigned_date = punch_date
+            
+            if punch_type == 'IN':
+                current_shift_date = punch_date
+                last_in_time = ist_time
+                assigned_date = current_shift_date
+            elif punch_type == 'OUT':
+                if current_shift_date and last_in_time:
+                    if (ist_time - last_in_time).total_seconds() <= 16 * 3600:
+                        assigned_date = current_shift_date
+                    else:
+                        if ist_time.time() < noon_time:
+                            assigned_date = punch_date - timedelta(days=1)
+                else:
+                    if ist_time.time() < noon_time:
+                        assigned_date = punch_date - timedelta(days=1)
+            
+            key = (str(r.employee_id), assigned_date)
             if key not in records_by_emp_day:
                 records_by_emp_day[key] = []
             
