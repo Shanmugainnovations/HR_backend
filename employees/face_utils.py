@@ -86,13 +86,6 @@ def imagefile_to_encoding(file_obj) -> tuple:
             scale = 1024 / max(h, w)
             img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
-        # ✅ Pre-processing: Apply Contrast Normalization (CLAHE)
-        # This helps in consistent recognition across different lighting conditions
-        img_yuv = cv2.cvtColor(img, cv2.COLOR_RGB2YUV)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        img_yuv[:,:,0] = clahe.apply(img_yuv[:,:,0])
-        img = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2RGB)
-
         # ✅ Anti-Spoofing Check
         is_real = check_liveness(img)
         if not is_real:
@@ -122,7 +115,7 @@ def base64_to_encoding(b64_string) -> tuple:
     imgbytes = base64.b64decode(data)
     return imagefile_to_encoding(imgbytes)
 
-def compare_encodings(known_encoding, unknown_encoding):
+def compare_encodings(known_encoding, unknown_encoding, threshold=0.40):
     """
     Return boolean match and distance (lower distance = better)
     """
@@ -130,9 +123,66 @@ def compare_encodings(known_encoding, unknown_encoding):
     known = np.array(known_encoding)
     unknown = np.array(unknown_encoding)
     dist = np.linalg.norm(known - unknown)
-    # threshold typical ~0.6 for face_recognition. 
-    # Adjusted to 0.5 to balance strictness and usability.
-    return (dist <= 0.5, float(dist))
+    # Adjusted to 0.40 to ensure strict verification without false positives.
+    return (dist <= threshold, float(dist))
+
+
+def match_face_1_to_n(unknown_encoding, known_matrix, employee_meta, threshold=0.40, min_margin=0.05):
+    """
+    Matches an unknown face encoding against a matrix of known encodings (1:N identification).
+    Applies Lowe's Nearest Neighbor Distance Ratio (NNDR) / margin check to prevent false positives.
+    
+    Returns:
+        tuple: (matched_meta, best_distance, error_reason)
+        If matched_meta is None, verification failed for the reason in error_reason.
+    """
+    if unknown_encoding is None or len(unknown_encoding) == 0 or known_matrix is None or len(known_matrix) == 0 or not employee_meta:
+        return None, 999.0, "No registered employees found or invalid encoding."
+
+    unknown = np.array(unknown_encoding)
+    distances = np.linalg.norm(known_matrix - unknown, axis=1)
+
+    # Group minimum distance by unique employee_id
+    emp_best_dist = {}
+    emp_meta_map = {}
+    for idx, dist in enumerate(distances):
+        meta = employee_meta[idx]
+        emp_id = meta['employee_id']
+        if emp_id not in emp_best_dist or dist < emp_best_dist[emp_id]:
+            emp_best_dist[emp_id] = float(dist)
+            emp_meta_map[emp_id] = meta
+
+    # Sort unique employees by best distance ascending
+    sorted_emps = sorted(emp_best_dist.items(), key=lambda x: x[1])
+    
+    if not sorted_emps:
+        return None, 999.0, "No valid employee comparisons possible."
+
+    best_emp_id, best_dist = sorted_emps[0]
+    best_meta = emp_meta_map[best_emp_id]
+
+    # Check absolute threshold first
+    if best_dist > threshold:
+        print(f"❌ Rejected: Best distance {best_dist:.4f} exceeds threshold {threshold}")
+        return None, best_dist, "User Not Found. Face match not confident enough."
+
+    # Check Lowe's NNDR margin against the second closest DIFFERENT employee
+    if len(sorted_emps) > 1:
+        second_emp_id, second_dist = sorted_emps[1]
+        margin = second_dist - best_dist
+        ratio = best_dist / second_dist if second_dist > 0 else 1.0
+        
+        print(f"🔍 DEBUG Face Match: 1st={best_meta['name']} ({best_dist:.4f}) | 2nd={emp_meta_map[second_emp_id]['name']} ({second_dist:.4f}) | Margin={margin:.4f} | Ratio={ratio:.4f}")
+        
+        # If the second best employee is too close to the best match, it is ambiguous
+        if margin < min_margin and ratio > 0.88:
+            print(f"❌ Rejected: Ambiguous match between {best_meta['name']} and {emp_meta_map[second_emp_id]['name']} (Margin: {margin:.4f})")
+            return None, best_dist, "Face match ambiguous with another registered employee. Please ensure good lighting and face camera directly."
+    else:
+        print(f"🔍 DEBUG Face Match: 1st={best_meta['name']} ({best_dist:.4f}) | Only 1 employee in database.")
+
+    print(f"✅ Confident Match: {best_meta['name']} (ID: {best_emp_id}) with distance {best_dist:.4f}")
+    return best_meta, best_dist, None
 
 
 import hashlib
