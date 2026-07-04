@@ -14,7 +14,7 @@ from rest_framework.response import Response
 
 from employees.models import Employee, EmployeeAttendance, SpoofingAttempt
 import base64
-from employees.face_utils import base64_to_encoding, compare_encodings, imagefile_to_encoding, match_face_1_to_n, SpoofingDetectedError
+from employees.face_utils import base64_to_encoding, compare_encodings, imagefile_to_encoding, SpoofingDetectedError
 from pyauth.auth import HasRolePermission
 
 from .utils import to_list
@@ -131,16 +131,25 @@ def mark_attendance(request):
     if known_matrix.size == 0:
         return Response({"error": "No registered employees found"}, status=404)
 
-    meta1, dist1, err1 = match_face_1_to_n(enc1, known_matrix, employee_meta, threshold=0.40, min_margin=0.05) if enc1 else (None, 999.0, "No encoding 1")
-    meta2, dist2, err2 = match_face_1_to_n(enc2, known_matrix, employee_meta, threshold=0.40, min_margin=0.05) if enc2 else (None, 999.0, "No encoding 2")
+    def get_best_match(enc):
+        if not enc:
+            return None, 999.0
+        enc_np = np.array(enc)
+        distances = np.linalg.norm(known_matrix - enc_np, axis=1)
+        best_idx = np.argmin(distances)
+        return employee_meta[best_idx], float(distances[best_idx])
+
+    meta1, dist1 = get_best_match(enc1)
+    meta2, dist2 = get_best_match(enc2)
     
-    best_distance = 999.0
-    matched_meta = None
-    is_real = True
+    MATCH_THRESHOLD = 0.45
+    best_distance = dist1
+    matched_meta = meta1
+    is_real = is_real1
     
     if meta1 and meta2:
         if meta1['employee_id'] != meta2['employee_id']:
-            print(f"❌ Rejected: Inconsistent match across frames ({meta1['name']} vs {meta2['name']})")
+            print(f"❌ Rejected: Inconsistent match ({meta1['name']} vs {meta2['name']})")
             return Response({"error": "Face match inconsistent across frames. Please hold still and try again."}, status=400)
         best_distance = max(dist1, dist2)
         is_real = is_real1 and is_real2
@@ -154,10 +163,9 @@ def mark_attendance(request):
         matched_meta = meta2
         is_real = is_real2
         
-    if not matched_meta:
-        error_msg = err1 if not meta1 and err1 != "No encoding 1" else (err2 if not meta2 and err2 != "No encoding 2" else "User Not Found. Face match not confident enough.")
-        print(f"❌ Rejected: {error_msg}")
-        return Response({"error": error_msg}, status=404)
+    if best_distance > MATCH_THRESHOLD:
+        print(f"❌ Rejected: Best distance {best_distance:.4f} is above threshold {MATCH_THRESHOLD}")
+        return Response({"error": "User Not Found. Face match not confident enough."}, status=404)
         
     # Fetch actual employee object
     matched_employee = Employee.objects.filter(employee_id=matched_meta['employee_id']).first()
@@ -632,10 +640,16 @@ def verify_face(request):
     if known_matrix.size == 0:
         return Response({"error": "No registered employees found"}, status=404)
 
-    matched_meta, best_distance, err_reason = match_face_1_to_n(enc, known_matrix, employee_meta, threshold=0.40, min_margin=0.05)
+    enc_np = np.array(enc)
+    distances = np.linalg.norm(known_matrix - enc_np, axis=1)
     
-    if not matched_meta:
-        return Response({"error": err_reason or "User Not Found. Face match not confident enough."}, status=404)
+    best_idx = np.argmin(distances)
+    best_distance = float(distances[best_idx])
+    matched_meta = employee_meta[best_idx]
+    
+    MATCH_THRESHOLD = 0.50
+    if best_distance > MATCH_THRESHOLD:
+        return Response({"error": "User Not Found. Face match not confident enough."}, status=404)
         
     if not is_real:
         # Spoofing detected, fail fast
