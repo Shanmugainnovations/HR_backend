@@ -82,14 +82,26 @@ def imagefile_to_encoding(file_obj) -> tuple:
         # ✅ Optimization: Resize image if it's too large to speed up processing
         # Large images (e.g. 4K) take much longer to process without accuracy gain for face matching.
         h, w = img.shape[:2]
-        if max(h, w) > 1024:
-            scale = 1024 / max(h, w)
+        if max(h, w) > 800:
+            scale = 800 / max(h, w)
             img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
         # ✅ Anti-Spoofing Check
         is_real = check_liveness(img)
         if not is_real:
             print("⚠️ Spoofing attempt detected (flagged)!")
+
+        # ✅ Lighting Correction: Apply CLAHE to improve accuracy in varied lighting
+        # CLAHE operates on the L channel of LAB color space
+        try:
+            lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+            l, a, b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            cl = clahe.apply(l)
+            limg = cv2.merge((cl,a,b))
+            img = cv2.cvtColor(limg, cv2.COLOR_LAB2RGB)
+        except Exception as e:
+            print(f"⚠️ CLAHE processing error, continuing with original image: {e}")
 
         # ✅ Face Encoding with model='hog' (Standard) or 'cnn' (Very Slow but Accurate)
         # We stick to HOG for speed but ensure we handle multiple faces
@@ -115,7 +127,7 @@ def base64_to_encoding(b64_string) -> tuple:
     imgbytes = base64.b64decode(data)
     return imagefile_to_encoding(imgbytes)
 
-def compare_encodings(known_encoding, unknown_encoding, threshold=0.40):
+def compare_encodings(known_encoding, unknown_encoding, threshold=0.45):
     """
     Return boolean match and distance (lower distance = better)
     """
@@ -127,7 +139,7 @@ def compare_encodings(known_encoding, unknown_encoding, threshold=0.40):
     return (dist <= threshold, float(dist))
 
 
-def match_face_1_to_n(unknown_encoding, known_matrix, employee_meta, threshold=0.40, min_margin=0.05):
+def match_face_1_to_n(unknown_encoding, known_matrix, employee_meta, threshold=0.45, min_margin=0.05):
     """
     Matches an unknown face encoding against a matrix of known encodings (1:N identification).
     Applies Lowe's Nearest Neighbor Distance Ratio (NNDR) / margin check to prevent false positives.
