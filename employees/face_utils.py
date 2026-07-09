@@ -211,7 +211,5 @@ def compute_md5(file_obj):
     md5 = hashlib.md5()
     for chunk in file_obj.chunks() if hasattr(file_obj, 'chunks') else iter(lambda: file_obj.read(4096), b""):
         md5.update(chunk)
-    file_obj.seek(0)  # Reset file pointer for reuse
+    file_obj.seek(0)  # Reset file pointer for reuse add
     return md5.hexdigest()
-
-
