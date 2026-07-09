@@ -36,7 +36,6 @@ urlpatterns = [
     path('global-departments/', views.get_global_departments, name='global-departments'),
     path('spoofing-reports/', views.get_spoofing_attempts, name='get_spoofing_attempts'),
     path('spoofing-reports/delete/', views.delete_spoofing_attempts, name='delete_spoofing_attempts'),
-    path('refresh-face-cache/', views.refresh_encoding_cache, name='refresh_encoding_cache'),
     
     # Manual Shift and Department URLs (Functional Views)
     path('shifts/', shift_list_create, name='shift-list'),
