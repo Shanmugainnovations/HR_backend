@@ -15,7 +15,8 @@ from .attendance import (
     verify_face,
     attendance_report_with_employee_details,
     get_spoofing_attempts,
-    delete_spoofing_attempts
+    delete_spoofing_attempts,
+    refresh_encoding_cache
 )
 from .auth import (
     get_device_info,

@@ -1,7 +1,7 @@
 from employees.models import Employee
 import ast
 
-def save_or_update_encoding(employee_id, encoding, created_by=None, name=None, image_md5=None):
+def save_or_update_encoding(employee_id, encoding, created_by=None, name=None, image_md5=None, refresh_cache=True):
     emp, created = Employee.objects.get_or_create(
         employee_id=employee_id,
         defaults={
@@ -13,19 +13,19 @@ def save_or_update_encoding(employee_id, encoding, created_by=None, name=None, i
     )
 
     if not created:
-        # Update existing record
         emp.name = name or emp.name
         emp.update_encoding(encoding, new_image_md5=image_md5)
-        emp.is_active = True  # Always reactivate if updating face
+        emp.is_active = True
         emp.lastmodified_by = created_by
         emp.save(update_fields=['name', 'lastmodified_by', 'lastmodified_date', 'image_md5', 'is_active'])
 
-    # ✅ Force refresh the encoding cache in attendance view
-    try:
-        from .attendance import get_optimized_encodings
-        get_optimized_encodings(force_refresh=True)
-    except ImportError:
-        pass
+    # Refresh the in-memory encoding cache (skip during batch to avoid N refreshes)
+    if refresh_cache:
+        try:
+            from .attendance import get_optimized_encodings
+            get_optimized_encodings(force_refresh=True)
+        except ImportError:
+            pass
 
     return emp
 
