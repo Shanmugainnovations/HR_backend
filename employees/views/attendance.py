@@ -14,87 +14,68 @@ from rest_framework.response import Response
 
 from employees.models import Employee, EmployeeAttendance, SpoofingAttempt
 import base64
-from employees.face_utils import base64_to_encoding, compare_encodings, imagefile_to_encoding, match_face_1_to_n, SpoofingDetectedError
+from employees.face_utils import base64_to_encoding, compare_encodings, imagefile_to_encoding, SpoofingDetectedError
 from pyauth.auth import HasRolePermission
 
 from .utils import to_list
 
-# --- Performance Cache ---
-# Stores employee face encodings in memory for fast 1:N matching.
-# Auto-refreshes every CACHE_TTL_MINUTES to pick up new registrations.
-CACHE_TTL_MINUTES = 30
-
+# --- 🚀 Performance Cache ---
+# Global cache to store employee encodings in memory for faster matching
 _ENCODING_CACHE = {
     'matrix': None,      # numpy array of shape (N, 128)
     'employees': [],     # List of employee metadata
-    'last_updated': None # datetime of last successful load
+    'last_updated': None
 }
 
 def get_optimized_encodings(force_refresh=False):
     """
     Returns a numpy matrix of all active employee encodings and their metadata.
-    Cache is refreshed:
-      - On first call (matrix is None)
-      - When force_refresh=True (e.g. called from refresh_encoding_cache endpoint)
-      - Automatically after CACHE_TTL_MINUTES minutes (picks up new registrations)
+    Refreshes automatically or when forced.
     """
     global _ENCODING_CACHE
     now = datetime.now()
-
-    cache_expired = (
-        _ENCODING_CACHE['last_updated'] is None or
-        (now - _ENCODING_CACHE['last_updated']).total_seconds() > CACHE_TTL_MINUTES * 60
-    )
-
-    if force_refresh or _ENCODING_CACHE['matrix'] is None or cache_expired:
-        reason = "forced" if force_refresh else ("initial load" if _ENCODING_CACHE['matrix'] is None else f"TTL expired ({CACHE_TTL_MINUTES} min)")
-        print(f"Refreshing face encoding cache ({reason})...")
-
-        # Fetch all employees and filter in Python to avoid Djongo SQL issues
+    
+    # Refresh cache if empty or force_refresh is True
+    if force_refresh or _ENCODING_CACHE['matrix'] is None:
+        print("🔄 Refreshing Face Encoding Cache...")
+        
+        # 🚨 Djongo fix: Completely avoid filtering in SQL to prevent SQLDecodeError
+        # Since we only have ~300 employees, fetching all and filtering in Python is safe and fast.
         employees = Employee.objects.all()
-
+        
         matrix_list = []
         meta_list = []
-
+        
         for emp in employees:
+            # check if active and encoding exists
             if not emp.is_active:
                 continue
-
-            added = 0
-
-            # 1. Current (latest) encoding
+                
             raw_enc = emp.current_face_encoding
-            enc = to_list(raw_enc) if raw_enc else None
+            if not raw_enc:
+                continue
+                
+            enc = to_list(raw_enc)
             if enc and len(enc) == 128:
                 matrix_list.append(enc)
-                meta_list.append({'employee_id': emp.employee_id, 'name': emp.name})
-                added += 1
-
-            # 2. Historical encodings — include up to last 3 to cover re-registrations
-            history = emp.face_encoding_data_history or []
-            for past_enc_raw in history[-3:]:
-                past_enc = to_list(past_enc_raw) if past_enc_raw else None
-                if past_enc and len(past_enc) == 128:
-                    matrix_list.append(past_enc)
-                    meta_list.append({'employee_id': emp.employee_id, 'name': emp.name})
-                    added += 1
-
-            if added == 0:
-                continue  # skip employees with no valid encoding at all
-
+                meta_list.append({
+                    'employee_id': emp.employee_id,
+                    'name': emp.name
+                })
+        
         if matrix_list:
             _ENCODING_CACHE['matrix'] = np.array(matrix_list)
             _ENCODING_CACHE['employees'] = meta_list
             _ENCODING_CACHE['last_updated'] = now
-            print(f"Cache updated: {len(meta_list)} employees loaded.")
+            print(f"✅ Cache updated: {len(meta_list)} employees loaded.")
         else:
             _ENCODING_CACHE['matrix'] = np.empty((0, 128))
             _ENCODING_CACHE['employees'] = []
-            _ENCODING_CACHE['last_updated'] = now
-
+            
     return _ENCODING_CACHE['matrix'], _ENCODING_CACHE['employees']
 
 @api_view(['POST'])
+# @permission_classes([HasRolePermission])
 def mark_attendance(request):
     image1_b64 = request.data.get('image1')
     image1_file = request.FILES.get('image1')
@@ -126,24 +107,17 @@ def mark_attendance(request):
             if device_doc:
                 device_label = device_doc.get("label", "Unknown Device")
         except Exception as e:
-            print(f"Error identifying device: {e}")
+            print(f"🚨 DEBUG: Error identifying device: {e}")
 
     def extract_face(img_file, img_b64):
         try:
             if img_file:
-                print(f"[mark_attendance] Processing image file: {getattr(img_file, 'name', 'unknown')}, size={getattr(img_file, 'size', '?')}")
-                result = imagefile_to_encoding(img_file)
+                return imagefile_to_encoding(img_file)
             elif img_b64:
-                print(f"[mark_attendance] Processing base64 image, length={len(img_b64)}")
-                result = base64_to_encoding(img_b64)
-            else:
-                print("[mark_attendance] No image data provided for this slot.")
-                return None, True
-            enc, is_real = result
-            print(f"[mark_attendance] Encoding result: enc_len={len(enc) if enc else 0}, is_real={is_real}")
-            return enc, is_real
+                return base64_to_encoding(img_b64)
+            return None, True
         except Exception as e:
-            print(f"[mark_attendance] Error extracting face: {e}")
+            print(f"🚨 DEBUG: Error extracting face: {e}")
             return None, True
 
     # 1. Extract Encoding & Liveness for image
@@ -182,8 +156,9 @@ def mark_attendance(request):
 
     # 5. Handle Spoofing (Only if User Found)
     if not is_real:
-        print(f"Spoofing detected for employee {matched_employee.employee_id}")
+        print(f"🚨 DEBUG: Spoofing detected (Liveness Check Failed) for employee {matched_employee.employee_id}!")
         
+        # 🚨 Capture Spoofing Attempt
         spoofed_image_b64 = ""
         try:
             if image1_b64:
@@ -193,16 +168,17 @@ def mark_attendance(request):
                 file_content = image1_file.read()
                 spoofed_image_b64 = base64.b64encode(file_content).decode('utf-8')
         except Exception as e:
-            print(f"Error processing spoofed image for storage: {e}")
+            print(f"🚨 DEBUG: Error processing spoofed image for storage: {e}")
 
         try:
             SpoofingAttempt.objects.create(
-                employee_id=matched_employee.employee_id,
+                employee_id=matched_employee.employee_id,  # Matched ID
                 device_id=device_label,
                 image=spoofed_image_b64
             )
+            print("✅ DEBUG: SpoofingAttempt record created.")
         except Exception as e:
-            print(f"Error creating SpoofingAttempt record: {e}")
+            print(f"🚨 DEBUG: Error creating SpoofingAttempt record: {e}")
 
         return Response({"error": "Spoofing detected! Real face required."}, status=400)
 
@@ -239,7 +215,7 @@ def mark_attendance(request):
                 img_bytes = file_obj.read()
                 base64_img = f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
         except Exception as e:
-            print(f"Error fetching registered image for preview: {e}")
+            print(f"🚨 DEBUG: Error fetching registered image for preview: {e}")
 
     return Response({
         "employee": matched_employee.employee_id,
@@ -635,7 +611,7 @@ def verify_face(request):
         else:
             enc, is_real = base64_to_encoding(image_b64)
     except Exception as e:
-        print(f"Error extracting face for verify-face: {e}")
+        print(f"🚨 DEBUG: Error extracting face for verify-face: {e}")
         return Response({"error": "Error processing image"}, status=400)
 
     if not enc:
@@ -646,10 +622,16 @@ def verify_face(request):
     if known_matrix.size == 0:
         return Response({"error": "No registered employees found"}, status=404)
 
-    matched_meta, best_distance, err_reason = match_face_1_to_n(enc, known_matrix, employee_meta, threshold=0.38, min_margin=0.10)
+    enc_np = np.array(enc)
+    distances = np.linalg.norm(known_matrix - enc_np, axis=1)
     
-    if not matched_meta:
-        return Response({"error": err_reason or "User Not Found. Face match not confident enough."}, status=404)
+    best_idx = np.argmin(distances)
+    best_distance = float(distances[best_idx])
+    matched_meta = employee_meta[best_idx]
+    
+    MATCH_THRESHOLD = 0.50
+    if best_distance > MATCH_THRESHOLD:
+        return Response({"error": "User Not Found. Face match not confident enough."}, status=404)
         
     if not is_real:
         # Spoofing detected, fail fast
@@ -780,26 +762,5 @@ def delete_spoofing_attempts(request):
     try:
         SpoofingAttempt.objects.filter(id__in=ids).delete()
         return Response({"message": "Deleted successfully"}, status=200)
-    except Exception as e:
-        return Response({"error": str(e)}, status=500)
-
-
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def refresh_encoding_cache(request):
-    """
-    Force-refresh the in-memory face encoding cache immediately.
-    Call this after registering a new employee so they can be recognized
-    without waiting for the automatic TTL refresh.
-
-    POST /_b_a_c_k_e_n_d/HR/refresh-face-cache/
-    """
-    try:
-        matrix, employees = get_optimized_encodings(force_refresh=True)
-        return Response({
-            "message": "Face encoding cache refreshed successfully.",
-            "employees_loaded": len(employees),
-            "last_updated": _ENCODING_CACHE['last_updated'].isoformat() if _ENCODING_CACHE['last_updated'] else None
-        }, status=200)
     except Exception as e:
         return Response({"error": str(e)}, status=500)
