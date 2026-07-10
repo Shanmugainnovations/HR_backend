@@ -101,3 +101,5 @@ Werkzeug==3.1.4
 wrapt==2.0.1
 yarl==1.17.0
 openpyxl==3.1.5
+insightface==1.0.1
+onnxruntime==1.27.0

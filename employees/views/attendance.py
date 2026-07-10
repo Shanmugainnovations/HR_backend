@@ -78,16 +78,18 @@ def get_optimized_encodings(force_refresh=False):
 # @permission_classes([HasRolePermission])
 def mark_attendance(request):
     image1_b64 = request.data.get('image1')
-    image2_b64 = request.data.get('image2')
     image1_file = request.FILES.get('image1')
-    image2_file = request.FILES.get('image2')
-    
-    # Fallback for old single-image payload
+
+    # Fallback: support frontend sending a single 'image' key
     if not image1_b64 and not image1_file:
         image1_b64 = request.data.get('image')
         image1_file = request.FILES.get('image')
 
-    employee_id = request.data.get('auth-user-id')
+    verified_employee_id = request.data.get('verifiedEmployeeID')
+    if not verified_employee_id:
+        return Response({"error": "verifiedEmployeeID is required"}, status=400)
+
+    print(f"[mark_attendance] Keys received — data: {list(request.data.keys())}, files: {list(request.FILES.keys())}")
 
     # 0. Identify Device by Fingerprint
     fingerprint = request.headers.get('X-Device-Id') or request.data.get('fingerprint')
@@ -118,12 +120,13 @@ def mark_attendance(request):
             print(f"🚨 DEBUG: Error extracting face: {e}")
             return None, True
 
-    # 1. Extract Encoding & Liveness for both images
+    # 1. Extract Encoding & Liveness for image
     enc1, is_real1 = extract_face(image1_file, image1_b64)
-    enc2, is_real2 = extract_face(image2_file, image2_b64)
 
-    if not enc1 and not enc2:
-        return Response({"error": "No face found in images"}, status=400)
+    print(f"[mark_attendance] enc1={'ok' if enc1 else 'EMPTY'}")
+
+    if not enc1:
+        return Response({"error": "No face found in image"}, status=400)
 
     # 2. Find Matching Employee (Vectorized Optimization)
     known_matrix, employee_meta = get_optimized_encodings()
@@ -131,41 +134,20 @@ def mark_attendance(request):
     if known_matrix.size == 0:
         return Response({"error": "No registered employees found"}, status=404)
 
-    def get_best_match(enc):
-        if not enc:
-            return None, 999.0
-        enc_np = np.array(enc)
-        distances = np.linalg.norm(known_matrix - enc_np, axis=1)
-        best_idx = np.argmin(distances)
-        return employee_meta[best_idx], float(distances[best_idx])
-
-    meta1, dist1 = get_best_match(enc1)
-    meta2, dist2 = get_best_match(enc2)
+    meta1, dist1, err1 = match_face_1_to_n(enc1, known_matrix, employee_meta, threshold=0.38, min_margin=0.10) if enc1 else (None, 999.0, "No encoding 1")
     
-    MATCH_THRESHOLD = 0.45
+    if not meta1:
+        error_msg = err1 if err1 != "No encoding 1" else "User Not Found. Face match not confident enough."
+        print(f"❌ Rejected: {error_msg}")
+        return Response({"error": error_msg}, status=404)
+
+    if str(meta1['employee_id']) != str(verified_employee_id):
+        print(f"❌ Rejected: Face mismatch. Expected {verified_employee_id}, found {meta1['employee_id']}")
+        return Response({"error": "Face mismatch. Please hold still and try again."}, status=400)
+        
     best_distance = dist1
     matched_meta = meta1
     is_real = is_real1
-    
-    if meta1 and meta2:
-        if meta1['employee_id'] != meta2['employee_id']:
-            print(f"❌ Rejected: Inconsistent match ({meta1['name']} vs {meta2['name']})")
-            return Response({"error": "Face match inconsistent across frames. Please hold still and try again."}, status=400)
-        best_distance = max(dist1, dist2)
-        is_real = is_real1 and is_real2
-        matched_meta = meta1
-    elif meta1:
-        best_distance = dist1
-        matched_meta = meta1
-        is_real = is_real1
-    elif meta2:
-        best_distance = dist2
-        matched_meta = meta2
-        is_real = is_real2
-        
-    if best_distance > MATCH_THRESHOLD:
-        print(f"❌ Rejected: Best distance {best_distance:.4f} is above threshold {MATCH_THRESHOLD}")
-        return Response({"error": "User Not Found. Face match not confident enough."}, status=404)
         
     # Fetch actual employee object
     matched_employee = Employee.objects.filter(employee_id=matched_meta['employee_id']).first()
