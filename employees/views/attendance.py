@@ -97,14 +97,16 @@ def get_optimized_encodings(force_refresh=False):
 @api_view(['POST'])
 def mark_attendance(request):
     image1_b64 = request.data.get('image1')
-    image2_b64 = request.data.get('image2')
     image1_file = request.FILES.get('image1')
-    image2_file = request.FILES.get('image2')
 
     # Fallback: support frontend sending a single 'image' key
     if not image1_b64 and not image1_file:
         image1_b64 = request.data.get('image')
         image1_file = request.FILES.get('image')
+
+    verified_employee_id = request.data.get('verifiedEmployeeID')
+    if not verified_employee_id:
+        return Response({"error": "verifiedEmployeeID is required"}, status=400)
 
     print(f"[mark_attendance] Keys received — data: {list(request.data.keys())}, files: {list(request.FILES.keys())}")
 
@@ -144,14 +146,13 @@ def mark_attendance(request):
             print(f"[mark_attendance] Error extracting face: {e}")
             return None, True
 
-    # 1. Extract Encoding & Liveness for both images
+    # 1. Extract Encoding & Liveness for image
     enc1, is_real1 = extract_face(image1_file, image1_b64)
-    enc2, is_real2 = extract_face(image2_file, image2_b64)
 
-    print(f"[mark_attendance] enc1={'ok' if enc1 else 'EMPTY'}, enc2={'ok' if enc2 else 'EMPTY'}")
+    print(f"[mark_attendance] enc1={'ok' if enc1 else 'EMPTY'}")
 
-    if not enc1 and not enc2:
-        return Response({"error": "No face found in images"}, status=400)
+    if not enc1:
+        return Response({"error": "No face found in image"}, status=400)
 
     # 2. Find Matching Employee (Vectorized Optimization)
     known_matrix, employee_meta = get_optimized_encodings()
@@ -160,32 +161,19 @@ def mark_attendance(request):
         return Response({"error": "No registered employees found"}, status=404)
 
     meta1, dist1, err1 = match_face_1_to_n(enc1, known_matrix, employee_meta, threshold=0.38, min_margin=0.10) if enc1 else (None, 999.0, "No encoding 1")
-    meta2, dist2, err2 = match_face_1_to_n(enc2, known_matrix, employee_meta, threshold=0.38, min_margin=0.10) if enc2 else (None, 999.0, "No encoding 2")
     
-    best_distance = 999.0
-    matched_meta = None
-    is_real = True
-    
-    if meta1 and meta2:
-        if meta1['employee_id'] != meta2['employee_id']:
-            print(f"❌ Rejected: Inconsistent match across frames ({meta1['name']} vs {meta2['name']})")
-            return Response({"error": "Face match inconsistent across frames. Please hold still and try again."}, status=400)
-        best_distance = max(dist1, dist2)
-        is_real = is_real1 and is_real2
-        matched_meta = meta1
-    elif meta1:
-        best_distance = dist1
-        matched_meta = meta1
-        is_real = is_real1
-    elif meta2:
-        best_distance = dist2
-        matched_meta = meta2
-        is_real = is_real2
-        
-    if not matched_meta:
-        error_msg = err1 if not meta1 and err1 != "No encoding 1" else (err2 if not meta2 and err2 != "No encoding 2" else "User Not Found. Face match not confident enough.")
+    if not meta1:
+        error_msg = err1 if err1 != "No encoding 1" else "User Not Found. Face match not confident enough."
         print(f"❌ Rejected: {error_msg}")
         return Response({"error": error_msg}, status=404)
+
+    if str(meta1['employee_id']) != str(verified_employee_id):
+        print(f"❌ Rejected: Face mismatch. Expected {verified_employee_id}, found {meta1['employee_id']}")
+        return Response({"error": "Face mismatch. Please hold still and try again."}, status=400)
+        
+    best_distance = dist1
+    matched_meta = meta1
+    is_real = is_real1
         
     # Fetch actual employee object
     matched_employee = Employee.objects.filter(employee_id=matched_meta['employee_id']).first()
