@@ -14,7 +14,7 @@ from rest_framework.response import Response
 
 from employees.models import Employee, EmployeeAttendance, SpoofingAttempt
 import base64
-from employees.face_utils import base64_to_encoding, compare_encodings, imagefile_to_encoding, SpoofingDetectedError
+from employees.face_utils import base64_to_encoding, compare_encodings, imagefile_to_encoding, SpoofingDetectedError, match_face_1_to_n
 from pyauth.auth import HasRolePermission
 
 from .utils import to_list
