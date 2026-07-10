@@ -134,7 +134,7 @@ def mark_attendance(request):
     if known_matrix.size == 0:
         return Response({"error": "No registered employees found"}, status=404)
 
-    meta1, dist1, err1 = match_face_1_to_n(enc1, known_matrix, employee_meta, threshold=0.38, min_margin=0.10) if enc1 else (None, 999.0, "No encoding 1")
+    meta1, dist1, err1 = match_face_1_to_n(enc1, known_matrix, employee_meta, threshold=0.45, min_margin=0.05) if enc1 else (None, 999.0, "No encoding 1")
     
     if not meta1:
         error_msg = err1 if err1 != "No encoding 1" else "User Not Found. Face match not confident enough."

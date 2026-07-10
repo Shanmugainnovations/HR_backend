@@ -86,13 +86,7 @@ def imagefile_to_encoding(file_obj) -> tuple:
             scale = 800 / max(h, w)
             img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
-        # ✅ Pre-processing: Apply Contrast Normalization (CLAHE)
-        # This helps in consistent recognition across different lighting conditions
-        img_yuv = cv2.cvtColor(img, cv2.COLOR_RGB2YUV)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        img_yuv[:,:,0] = clahe.apply(img_yuv[:,:,0])
-        img = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2RGB)
-
+        # (CLAHE removed here to avoid double processing and to keep original image for liveness check)
         # ✅ Anti-Spoofing Check
         is_real = check_liveness(img)
         if not is_real:
