@@ -85,6 +85,17 @@ class SpoofingAttempt(models.Model):
     def __str__(self):
         return f"Spoofing Attempt @ {self.timestamp}"    
 
+class FaceMismatchLog(models.Model):
+    id                   = models.AutoField(primary_key=True)
+    timestamp            = models.DateTimeField(auto_now_add=True)
+    verified_employee_id = models.CharField(max_length=50)
+    mark_employee_id     = models.CharField(max_length=50, null=True, blank=True)
+    image                = models.TextField()  # Storing as base64 string
+    device_id            = models.CharField(max_length=50, blank=True, null=True)
+
+    def __str__(self):
+        return f"Mismatch: Verified {self.verified_employee_id} vs {self.mark_employee_id or 'Unknown'} @ {self.timestamp}"
+
 class Shift(models.Model):
     id         = models.AutoField(primary_key=True)
     name       = models.CharField(max_length=50, unique=True)

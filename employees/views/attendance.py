@@ -143,7 +143,23 @@ def mark_attendance(request):
 
     if str(meta1['employee_id']) != str(verified_employee_id):
         print(f"❌ Rejected: Face mismatch. Expected {verified_employee_id}, found {meta1['employee_id']}")
-        return Response({"error": "Face mismatch. Please hold still and try again."}, status=400)
+        
+        # Log the mismatch
+        try:
+            from .models import FaceMismatchLog
+            FaceMismatchLog.objects.create(
+                verified_employee_id=verified_employee_id,
+                mark_employee_id=meta1['employee_id'],
+                image=image1_b64 if image1_b64 else "",
+                device_id=request.headers.get("X-Device-Id")
+            )
+        except Exception as e:
+            print(f"🚨 Failed to log face mismatch: {e}")
+            
+        return Response({
+            "error": "Face mismatch. Please hold still and try again.",
+            "markEmployeeID": meta1['employee_id']
+        }, status=400)
         
     best_distance = dist1
     matched_meta = meta1

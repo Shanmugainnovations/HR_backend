@@ -421,7 +421,28 @@ def register_employee(request):
     image_file = data.get('image')
 
     if not image_file:
-        return JsonResponse({"error": "No image provided"}, status=400)
+        # Sometimes DRF drops the image from validated_data if there are parsing edge cases.
+        # Check raw request data just in case.
+        raw_image = request.data.get('image')
+        if not raw_image:
+            return JsonResponse({"error": "No image provided"}, status=400)
+        
+        # Manually decode raw_image to a ContentFile
+        import base64
+        from django.core.files.base import ContentFile
+        import uuid
+        try:
+            if ';base64,' in raw_image:
+                header, base64_str = raw_image.split(';base64,')
+                ext = header.split('/')[-1]
+            else:
+                base64_str = raw_image
+                ext = 'jpg'
+            
+            decoded_img = base64.b64decode(base64_str)
+            image_file = ContentFile(decoded_img, name=f"{uuid.uuid4().hex}.{ext}")
+        except Exception as e:
+            return JsonResponse({"error": f"Failed to decode base64 image: {str(e)}"}, status=400)
 
     # ✅ Compute image MD5 hash
     image_md5 = compute_md5(image_file)
