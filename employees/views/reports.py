@@ -178,16 +178,19 @@ def roster_attendance_report(request):
         report_dates.append(curr)
         curr += timedelta(days=1)
 
-    # 3. Fetch Shift Schedules
+    # 3. Fetch Shift Schedules (avoiding select_related to prevent Djongo BSON limits with huge IN queries)
+    from employees.models import Shift
+    all_shifts = {s.id: s for s in Shift.objects.all()}
+    
     schedules = EmployeeShiftSchedule.objects.filter(
         date__gte=start_date, 
         date__lte=end_date,
         employee_id__in=employees_data.keys()
-    ).select_related('shift', 'employee')
+    )
 
     schedule_map = {} # {(emp_id, date): shift_obj}
     for sch in schedules:
-        schedule_map[(sch.employee_id, sch.date)] = sch.shift
+        schedule_map[(sch.employee_id, sch.date)] = all_shifts.get(sch.shift_id)
 
     # 4. Fetch Attendance (Grouped by Date & Employee)
     # Fetch from previous day and until next day to correctly pair night shifts

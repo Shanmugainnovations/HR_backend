@@ -177,7 +177,7 @@ def match_face_1_to_n(unknown_encoding, known_matrix, employee_meta, threshold=0
     # Check absolute threshold first
     if best_dist > threshold:
         print(f"❌ Rejected: Best distance {best_dist:.4f} exceeds threshold {threshold}")
-        return None, best_dist, "User Not Found. Face match not confident enough."
+        return best_meta, best_dist, "User Not Found. Face match not confident enough."
 
     # Check Lowe's NNDR margin against the second closest DIFFERENT employee
     if len(sorted_emps) > 1:
@@ -190,7 +190,7 @@ def match_face_1_to_n(unknown_encoding, known_matrix, employee_meta, threshold=0
         # If the second best employee is too close to the best match, it is ambiguous
         if margin < min_margin and ratio > 0.88:
             print(f"❌ Rejected: Ambiguous match between {best_meta['name']} and {emp_meta_map[second_emp_id]['name']} (Margin: {margin:.4f})")
-            return None, best_dist, "Face match ambiguous with another registered employee. Please ensure good lighting and face camera directly."
+            return best_meta, best_dist, "Face match ambiguous with another registered employee. Please ensure good lighting and face camera directly."
     else:
         print(f"🔍 DEBUG Face Match: 1st={best_meta['name']} ({best_dist:.4f}) | Only 1 employee in database.")
 

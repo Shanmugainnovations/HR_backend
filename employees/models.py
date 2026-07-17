@@ -81,6 +81,8 @@ class SpoofingAttempt(models.Model):
     image       = models.TextField()  # Storing as base64 string
     timestamp   = models.DateTimeField(auto_now_add=True)
     device_id   = models.CharField(max_length=50, blank=True, null=True)
+    category = models.CharField(max_length=50, blank=True, null=True) #values=unknown device and image spoofing UNDV and UNDM SPFV SPFM
+    
 
     def __str__(self):
         return f"Spoofing Attempt @ {self.timestamp}"    
