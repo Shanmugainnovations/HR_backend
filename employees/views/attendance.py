@@ -17,7 +17,7 @@ import base64
 from employees.face_utils import base64_to_encoding, compare_encodings, imagefile_to_encoding, SpoofingDetectedError, match_face_1_to_n
 from pyauth.auth import HasRolePermission
 
-from .utils import to_list
+from .utils import to_list, get_mongo_client
 
 # --- 🚀 Performance Cache ---
 # Global cache to store employee encodings in memory for faster matching
@@ -26,17 +26,6 @@ _ENCODING_CACHE = {
     'employees': [],     # List of employee metadata
     'last_updated': None
 }
-
-_MONGO_CLIENT = None
-
-def get_mongo_client():
-    """Returns a singleton MongoDB client to avoid reconnecting on every request."""
-    global _MONGO_CLIENT
-    if _MONGO_CLIENT is None:
-        mongo_uri = os.environ.get("GLOBAL_DB_HOST")
-        if mongo_uri:
-            _MONGO_CLIENT = MongoClient(mongo_uri)
-    return _MONGO_CLIENT
 
 def get_optimized_encodings(force_refresh=False):
     """
@@ -61,19 +50,23 @@ def get_optimized_encodings(force_refresh=False):
             # check if active and encoding exists
             if not emp.is_active:
                 continue
-                
-            raw_enc = emp.current_face_encoding
-            if not raw_enc:
-                continue
-                
-            enc = to_list(raw_enc)
-            if enc and len(enc) == 128:
-                matrix_list.append(enc)
-                meta_list.append({
-                    'employee_id': emp.employee_id,
-                    'name': emp.name,
-                    'image_md5': emp.image_md5
-                })
+
+            # Use the multi-encoding pool (e.g. 3 angles from registration) if present;
+            # fall back to the single current_face_encoding for employees registered
+            # before this field existed, so nothing existing breaks.
+            raw_list = to_list(emp.face_encodings) if emp.face_encodings else None
+            if not raw_list:
+                raw_list = [emp.current_face_encoding] if emp.current_face_encoding else []
+
+            for raw_enc in raw_list:
+                enc = to_list(raw_enc)
+                if enc and len(enc) == 128:
+                    matrix_list.append(enc)
+                    meta_list.append({
+                        'employee_id': emp.employee_id,
+                        'name': emp.name,
+                        'image_md5': emp.image_md5
+                    })
         
         if matrix_list:
             _ENCODING_CACHE['matrix'] = np.array(matrix_list)
@@ -249,9 +242,9 @@ def mark_attendance(request):
     image1_b64 = request.data.get('image')
     image1_file = request.FILES.get('image')
     # Fallback: support frontend sending a single 'image' key
-    if not image1_b64 and not image1_file:
-        image1_b64 = request.data.get('image')
-        image1_file = request.FILES.get('image')
+    # if not image1_b64 and not image1_file:
+    #     image1_b64 = request.data.get('image')
+    #     image1_file = request.FILES.get('image')
 
     verified_employee_id = request.data.get('verifiedEmployeeID')
     if not verified_employee_id:
@@ -373,9 +366,8 @@ def attendance_report_with_employee_details(request):
             return Response([], status=200)
 
         # ---- Mongo Connection ----
-        mongo_uri = os.environ.get("GLOBAL_DB_HOST")
         db_name = os.environ.get("GLOBAL_DB_NAME", "Global")
-        client = MongoClient(mongo_uri)
+        client = get_mongo_client()
         db = client[db_name]
 
         profiles = db['backend_diagnostics_profile']
@@ -753,11 +745,10 @@ def get_spoofing_attempts(request):
     department = request.GET.get('department')
     if department and department != 'All':
         try:
-            mongo_uri = os.environ.get("GLOBAL_DB_HOST")
             db_name = os.environ.get("GLOBAL_DB_NAME", "Global")
-            client = MongoClient(mongo_uri)
+            client = get_mongo_client()
             db = client[db_name]
-            
+
             raw_values = [d.strip() for d in department.split(',')]
             
             # Resolve numeric IDs to names

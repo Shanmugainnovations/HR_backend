@@ -595,7 +595,7 @@ def roster_attendance_report(request):
                 
                 # Determine abbreviation
                 abbr = '-'
-                if status == 'Present' or status == 'Mismatched Punch':
+                if status == 'Present':
                     abbr = 'P'
                 elif status == 'Late Login':
                     abbr = 'P(LL)'

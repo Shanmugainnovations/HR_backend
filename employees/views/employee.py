@@ -4,6 +4,7 @@ import gridfs
 import hashlib
 import mimetypes
 import requests
+import numpy as np
 from io import BytesIO
 from bson import ObjectId
 from pymongo import MongoClient
@@ -21,7 +22,7 @@ from employees.models import Employee
 from employees.serializers import EmployeeCreateSerializer
 from employees.face_utils import imagefile_to_encoding, compute_md5
 
-from .utils import save_or_update_encoding
+from .utils import save_or_update_encoding, get_mongo_client
 
 load_dotenv()
 
@@ -44,7 +45,7 @@ def get_all_employees_with_images(request):
         hr_db_name = os.getenv("GLOBAL_DB_NAME_HR", "HR")
         global_db_name = os.getenv("GLOBAL_DB_NAME_GLOBAL", "Global")
 
-        client = MongoClient(mongo_uri)
+        client = get_mongo_client()
         fs_hr = gridfs.GridFS(client[hr_db_name])
         fs_global = gridfs.GridFS(client[global_db_name])
 
@@ -98,27 +99,15 @@ def get_all_employees_with_images(request):
         }
 
         for emp in employees:
-            base64_img = None
-            
             # Resolve SQL Department ID from Mongo profile data
             profile = profile_map.get(str(emp.employee_id), {})
             dept_code = profile.get("department")
             dept_name = mongo_dept_map.get(dept_code, dept_code)
             sql_dept_id = sql_dept_map.get(dept_name)
 
+            image_preview = None
             if emp.image_md5:
-                file_obj = fs_hr.find_one({"md5": emp.image_md5})
-                if not file_obj:  # ⏩ Check Global DB if not found in HR
-                    file_obj = fs_global.find_one({"md5": emp.image_md5})
-
-                if file_obj:
-                    try:
-                        img_bytes = file_obj.read()
-                        base64_img = (
-                            f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode('utf-8')}"
-                        )
-                    except Exception:
-                        base64_img = None
+                image_preview = request.build_absolute_uri(f"/_b_a_c_k_e_n_d/HR/employees/image-by-md5/{emp.image_md5}/")
 
             employee_list.append({
                 "employee_id": emp.employee_id,
@@ -130,7 +119,7 @@ def get_all_employees_with_images(request):
                 "has_global_profile": str(emp.employee_id) in profile_map,
                 "created_date": emp.created_date,
                 "lastmodified_date": emp.lastmodified_date,
-                "image_preview": base64_img,
+                "image_preview": image_preview,
             })
 
         # 5️⃣ Return JSON response
@@ -138,6 +127,33 @@ def get_all_employees_with_images(request):
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def serve_employee_image_by_md5(request, image_md5):
+    """
+    Serve employee image binary directly by MD5 hash with HTTP caching.
+    """
+    try:
+        client = get_mongo_client()
+        hr_db_name = os.getenv("GLOBAL_DB_NAME_HR", "HR")
+        global_db_name = os.getenv("GLOBAL_DB_NAME_GLOBAL", "Global")
+
+        fs_hr = gridfs.GridFS(client[hr_db_name])
+        file_obj = fs_hr.find_one({"md5": image_md5})
+        if not file_obj:
+            fs_global = gridfs.GridFS(client[global_db_name])
+            file_obj = fs_global.find_one({"md5": image_md5})
+
+        if not file_obj:
+            raise Http404("Image not found")
+
+        response = HttpResponse(file_obj.read(), content_type="image/jpeg")
+        response['Cache-Control'] = 'public, max-age=86400'
+        return response
+    except Exception as e:
+        raise Http404("Image not found")
 
 
 @api_view(['GET'])
@@ -155,7 +171,7 @@ def get_employee_by_md5(request, image_md5):
         # 2️⃣ Connect to MongoDB to fetch image
         mongo_uri = os.getenv("GLOBAL_DB_HOST")
         global_db = os.getenv("GLOBAL_DB_NAME", "HR")
-        client = MongoClient(mongo_uri)
+        client = get_mongo_client()
         fs = gridfs.GridFS(client[global_db])
 
         # 3️⃣ Find image file by MD5 hash in GridFS
@@ -223,7 +239,7 @@ def get_employee_detail(request, employee_id):
         mongo_uri = os.getenv("GLOBAL_DB_HOST")
         hr_db_name = os.getenv("GLOBAL_DB_NAME_HR", "HR")
         global_db_name = os.getenv("GLOBAL_DB_NAME_GLOBAL", "Global")
-        client = MongoClient(mongo_uri)
+        client = get_mongo_client()
 
         # 2️⃣ Find employee in SQL
         emp = Employee.objects.filter(employee_id=employee_id).first()
@@ -288,7 +304,7 @@ def get_all_employee_from_global(request):
         # ✅ Connect to Global MongoDB
         mongo_uri = os.environ.get("GLOBAL_DB_HOST")
         db_name = os.environ.get("GLOBAL_DB_NAME", "Global")
-        client = MongoClient(mongo_uri)
+        client = get_mongo_client()
         db = client[db_name]
 
         profiles_col = db['backend_diagnostics_profile']
@@ -347,15 +363,13 @@ def get_all_employee_from_global(request):
             for d in designations_col.find({'is_active': True})
         }
 
-        # ✅ Fetch all locally stored employees
-        local_employees = Employee.objects.all().values(
-            "employee_id", "current_face_encoding", "is_active"
-        )
+        # ✅ Fetch all locally stored employees (optimized: exclude heavy face_encoding vector arrays)
+        local_employees = Employee.objects.all().values("employee_id", "is_active")
 
         # Build a dictionary of {employee_id: {has_encoding, is_active}}
         local_employee_map = {
             str(emp["employee_id"]): {
-                "has_encoding": bool(emp["current_face_encoding"]),
+                "has_encoding": str(emp["employee_id"]) in face_registered_ids,
                 "is_active": emp["is_active"]
             }
             for emp in local_employees
@@ -408,9 +422,194 @@ def get_all_employee_from_global(request):
         return JsonResponse({"error": str(e)}, status=500)
 
 
+MAX_FACE_ENCODINGS = 5
+MIN_FACE_ENCODINGS_LENIENT = 2  # minimum usable faces required out of an auto-capture batch
+DEDUP_DISTANCE_THRESHOLD = 0.15  # skip a candidate nearly identical to one already kept
+
+
+def _select_face_frames(images_list, lenient):
+    """
+    Pure selection step, no DB/GridFS writes: decodes each candidate photo, encodes it, and
+    keeps up to MAX_FACE_ENCODINGS frames (skipping near-duplicates when lenient). Shared by
+    the preview endpoint (called right after a 5s recording finishes, so the frontend can show
+    which frames would be used before the user even hits Register/Update) and the actual
+    registration endpoint below.
+
+    Returns (kept, skipped, error):
+      kept: list of {"index", "decoded_img", "ext", "encoding"} for the frames selected
+      skipped: count of candidate frames that were decoded/tried but not kept
+      error: None on success, else a user-facing message and `kept` is []
+    """
+    kept = []
+    skipped = 0
+
+    for idx, raw_image in enumerate(images_list):
+        if len(kept) >= MAX_FACE_ENCODINGS:
+            break
+
+        try:
+            if ';base64,' in raw_image:
+                header, base64_str = raw_image.split(';base64,')
+                ext = header.split('/')[-1]
+            else:
+                base64_str = raw_image
+                ext = 'jpg'
+            decoded_img = base64.b64decode(base64_str)
+        except Exception as e:
+            if lenient:
+                skipped += 1
+                continue
+            return [], skipped, f"Failed to decode image #{idx + 1}: {str(e)}"
+
+        encoding, is_real = imagefile_to_encoding(decoded_img)
+        if not encoding:
+            if lenient:
+                skipped += 1
+                continue
+            return [], skipped, f"No face detected in photo #{idx + 1} of {len(images_list)}. Please retake."
+
+        # Skip near-duplicate frames so the kept encodings represent genuinely different
+        # angles/moments instead of several near-identical consecutive video frames.
+        if lenient and kept:
+            enc_arr = np.array(encoding)
+            too_similar = any(
+                np.linalg.norm(enc_arr - np.array(k['encoding'])) < DEDUP_DISTANCE_THRESHOLD
+                for k in kept
+            )
+            if too_similar:
+                skipped += 1
+                continue
+
+        kept.append({"index": idx, "decoded_img": decoded_img, "ext": ext, "encoding": encoding})
+
+    if not kept or (lenient and len(kept) < MIN_FACE_ENCODINGS_LENIENT):
+        return [], skipped, "Couldn't get enough clear face shots from the recording. Please retry with steady framing and good lighting."
+
+    return kept, skipped, None
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def preview_face_frames(request):
+    """
+    Given a batch of candidate photos (e.g. frames auto-sampled from a 5s recording), returns
+    which ones would be selected for registration - without saving anything. Lets the frontend
+    show the picked photos right after the recording finishes, before the user submits.
+    """
+    images_list = request.data.get('images')
+    if not isinstance(images_list, list) or len(images_list) == 0:
+        return JsonResponse({"error": "images is required"}, status=400)
+
+    images_list = [img for img in images_list if img]
+    if not images_list:
+        return JsonResponse({"error": "No images provided"}, status=400)
+
+    lenient = len(images_list) > MAX_FACE_ENCODINGS
+    kept, skipped, error = _select_face_frames(images_list, lenient)
+    if error:
+        return JsonResponse({"error": error}, status=400)
+
+    return JsonResponse({
+        "success": True,
+        "selected_frame_indices": [item["index"] for item in kept],
+        "frames_skipped": skipped
+    })
+
+
+def _register_employee_multi(request, images_list):
+    """
+    Registration path for multiple photos captured at once (e.g. 3 manual angle shots,
+    or ~7-8 frames auto-sampled from a 5-second webcam "recording" on the frontend).
+    Each photo is separately encoded; all valid encodings are stored so 1:N matching
+    (see get_optimized_encodings/match_face_1_to_n) can compare against every angle.
+    Leaves the single-image `register_employee` path below completely untouched.
+    """
+    employee_id = request.data.get('employee_id')
+    name = request.data.get('name', '')
+
+    if not employee_id or not employee_id.strip():
+        return JsonResponse({"error": "employee_id is required"}, status=400)
+
+    images_list = [img for img in images_list if img]
+    if not images_list:
+        return JsonResponse({"error": "No images provided"}, status=400)
+
+    # The manual 3-click flow sends exactly MAX_FACE_ENCODINGS frames, each already
+    # confirmed by the user via "Use This Photo" - keep that strict (any failure rejects
+    # the whole batch, as before). An auto-captured 5s recording sends more candidate
+    # frames than that, and can't guarantee every single frame has a clean face (blinks,
+    # motion blur) - so we're lenient there: keep the best successful ones, skip the rest.
+    lenient = len(images_list) > MAX_FACE_ENCODINGS
+
+    kept, skipped, error = _select_face_frames(images_list, lenient)
+    if error:
+        return JsonResponse({"error": error}, status=400)
+
+    try:
+        global_db = os.getenv("HR_DB_NAME", "HR")
+        client = get_mongo_client()
+        db = client[global_db]
+        fs = gridfs.GridFS(db)
+    except Exception as e:
+        return JsonResponse({"error": f"Failed to connect to image storage: {str(e)}"}, status=500)
+
+    encodings = []
+    gridfs_ids = []
+    selected_indices = []
+    primary_md5 = None
+
+    for item in kept:
+        image_md5 = hashlib.md5(item["decoded_img"]).hexdigest()
+        gridfs_file_id = fs.put(
+            item["decoded_img"],
+            filename=f"{employee_id}_{name}_{item['index'] + 1}.{item['ext']}",
+            content_type=f"image/{item['ext']}",
+            employeeId=employee_id,
+            md5=image_md5
+        )
+
+        encodings.append(item["encoding"])
+        gridfs_ids.append(str(gridfs_file_id))
+        selected_indices.append(item["index"])
+        if primary_md5 is None:
+            primary_md5 = image_md5
+
+    try:
+        emp = save_or_update_encoding(
+            employee_id,
+            encodings[0],
+            created_by=request.user if request.user.is_authenticated else None,
+            name=name,
+            image_md5=primary_md5,
+            encoding_list=encodings
+        )
+    except Exception as e:
+        return JsonResponse({"error": f"Failed to save encodings: {str(e)}"}, status=500)
+
+    return JsonResponse({
+        "success": True,
+        "employee_id": emp.employee_id,
+        "name": emp.name,
+        "image_md5": emp.image_md5,
+        "gridfs_image_ids": gridfs_ids,
+        "encodings_saved": len(emp.face_encodings or []),
+        "frames_skipped": skipped,
+        # Position of each kept frame within the submitted `images` array, so the frontend
+        # can show exactly which photos were used out of everything it sent (e.g. which
+        # frames out of a 5s recording were actually picked for encoding).
+        "selected_frame_indices": selected_indices
+    })
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def register_employee(request):
+    # ✅ Multi-photo path: if the frontend sends an `images` array (up to 3 angles),
+    # handle it separately and leave the original single-`image` flow below untouched.
+    images_list = request.data.get('images')
+    if isinstance(images_list, list) and len(images_list) > 0:
+        return _register_employee_multi(request, images_list)
+
     serializer = EmployeeCreateSerializer(data=request.data)
     if not serializer.is_valid():
         return JsonResponse(serializer.errors, status=400)
@@ -459,7 +658,7 @@ def register_employee(request):
         # ✅ Connect to MongoDB (use your local or cloud URI)
         mongo_uri = os.getenv("GLOBAL_DB_HOST")
         global_db = os.getenv("HR_DB_NAME", "HR")
-        client = MongoClient(mongo_uri)
+        client = get_mongo_client()
         db = client[global_db]
         fs = gridfs.GridFS(db)
 
@@ -507,7 +706,7 @@ def encode_employee_face(request, employee_id):
     try:
         mongo_uri = os.getenv("GLOBAL_DB_HOST")
         global_db = os.getenv("GLOBAL_DB_NAME", "Global")
-        client = MongoClient(mongo_uri)
+        client = get_mongo_client()
         global_profiles = client[global_db]['backend_diagnostics_profile']
 
         emp = global_profiles.find_one({"employeeId": employee_id})
@@ -560,7 +759,7 @@ def encode_employee_face(request, employee_id):
 @api_view(['GET'])
 def serve_file(request, file_id):
     try:
-        client = MongoClient(os.getenv('GLOBAL_DB_HOST'))
+        client = get_mongo_client()
         db = client[os.getenv('GLOBAL_DB_NAME','Global')]
         fs = gridfs.GridFS(db)
 
@@ -593,7 +792,7 @@ def export_employees_xls(request):
         # 2️⃣ Connect to Global MongoDB for profiles and departments
         mongo_uri = os.getenv("GLOBAL_DB_HOST")
         global_db_name = os.getenv("GLOBAL_DB_NAME_GLOBAL", "Global")
-        client = MongoClient(mongo_uri)
+        client = get_mongo_client()
         db_global = client[global_db_name]
         
         # Pre-fetch profiles and departments

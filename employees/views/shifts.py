@@ -138,12 +138,11 @@ def get_monthly_roster(request):
     # Initialize query
     schedules = EmployeeShiftSchedule.objects.filter(date__gte=start_date, date__lte=end_date)
 
-    # Filter by Department if provided
     if department and department != 'All':
         try:
-            mongo_uri = os.environ.get("GLOBAL_DB_HOST")
+            from .utils import get_mongo_client
             db_name = os.environ.get("GLOBAL_DB_NAME", "Global")
-            client = MongoClient(mongo_uri)
+            client = get_mongo_client()
             db = client[db_name]
 
             raw_ids = [d.strip() for d in department.split(',')]
@@ -189,9 +188,26 @@ def get_monthly_roster(request):
         except Exception as e:
             print(f"Error filtering roster by department: {e}")
             # Fallback (don't fail entire request, just log error)
+    from ..models import Shift, Employee
+    all_shifts = {s.id: s for s in Shift.objects.all()}
+    all_emp_names = {e.employee_id: e.name for e in Employee.objects.all()}
 
-    serializer = EmployeeShiftScheduleSerializer(schedules, many=True)
-    return Response(serializer.data)
+    schedule_values = list(schedules.values('id', 'employee_id', 'shift_id', 'date'))
+    data = []
+    for sch in schedule_values:
+        s_obj = all_shifts.get(sch['shift_id'])
+        emp_id = sch['employee_id']
+        data.append({
+            'id': sch['id'],
+            'employee': emp_id,
+            'employee_name': all_emp_names.get(emp_id, emp_id),
+            'shift': sch['shift_id'],
+            'shift_name': s_obj.name if s_obj else '',
+            'start_time': s_obj.start_time.strftime('%H:%M:%S') if s_obj else None,
+            'end_time': s_obj.end_time.strftime('%H:%M:%S') if s_obj else None,
+            'date': sch['date'].strftime('%Y-%m-%d')
+        })
+    return Response(data)
 
 @api_view(['POST'])
 def assign_shift(request):

@@ -10,6 +10,7 @@ from .views.shifts import (
 urlpatterns = [
     path('hrregistration/', views.registration),
     path('register/', views.register_employee, name='register-employee'),
+    path('preview-face-frames/', views.preview_face_frames, name='preview-face-frames'),
     path('employees/', views.get_all_employees_with_images, name='employee-list'),
     path('employees/export-xls/', views.export_employees_xls, name='export-employees-xls'),
     path('employees/<str:employee_id>/', views.get_employee_detail, name='employee-detail'),
@@ -24,6 +25,7 @@ urlpatterns = [
     path('serve-file/<str:file_id>/', views.serve_file, name="serve_file"),
     path('get_device_info/', views.get_device_info, name="serve_file"),
     path('employees/md5/<str:image_md5>/', views.get_employee_by_md5, name='get_employee_by_md5'),
+    path('employees/image-by-md5/<str:image_md5>/', views.serve_employee_image_by_md5, name='serve_employee_image_by_md5'),
     path('mark/', views.mark_attendance, name='mark_attendance'),
     path('verify-face/', views.verify_face, name='verify_face'),
     path('hrregistration/', views.registration, name='registration'),
@@ -42,7 +44,20 @@ urlpatterns = [
     path('shifts/<int:pk>/', shift_detail, name='shift-detail'),
     path('departments/', department_list_create, name='department-list'),
     path('departments/<int:pk>/', department_detail, name='department-detail'),
+
+    # New Employee Features
+    path('employee/today-status/', views.today_status, name='today_status'),
+    path('employee/my-attendance/', views.my_attendance_report, name='my_attendance_report'),
     
+    # Leave Management
+    path('leaves/apply/', views.apply_leave, name='apply_leave'),
+    path('leaves/my-leaves/', views.my_leaves, name='my_leaves'),
+    path('leaves/pending/', views.pending_leaves, name='pending_leaves'),
+    path('leaves/history/', views.leave_history, name='leave_history'),
+    path('leaves/<int:leave_id>/status/', views.update_leave_status, name='update_leave_status'),
+    path('leave-types/', views.leave_type_list_create, name='leave-type-list'),
+    path('leave-types/<int:pk>/', views.leave_type_detail, name='leave-type-detail'),
+
 
     # Roster URLs
     path('roster/', get_monthly_roster, name='get-monthly-roster'),

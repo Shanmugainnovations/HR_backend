@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import Employee
-from .models import EmployeeAttendance, Register, Shift, Department, EmployeeShiftSchedule
+from .models import EmployeeAttendance, Register, Shift, Department, EmployeeShiftSchedule, LeaveType
 from drf_extra_fields.fields import Base64ImageField
 from bson import ObjectId
 
@@ -63,6 +63,11 @@ class RegisterSerializer(serializers.ModelSerializer):
 class ShiftSerializer(serializers.ModelSerializer):
     class Meta:
         model = Shift
+        fields = '__all__'
+
+class LeaveTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LeaveType
         fields = '__all__'
 
 class DepartmentSerializer(serializers.ModelSerializer):

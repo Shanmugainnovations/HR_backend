@@ -57,7 +57,7 @@ def ip_whitelist_required(view_func):
     def wrapper(request, *args, **kwargs):
         client_ip = get_client_ip(request)
         print(client_ip)
-        if not AllowedDevice.objects.filter(ip_address=client_ip, is_active=True).exists():
+        if not AllowedDevice.objects.filter(ip_address=client_ip, is_active__in=[True]).exists():
             return JsonResponse(
                 {"error": f"Device not authorized. IP: {client_ip}"},
                 status=403

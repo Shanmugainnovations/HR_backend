@@ -9,60 +9,94 @@ from io import BytesIO
 import cv2
 from deepface import DeepFace
 import os
+import logging
 
-os.environ['DEEPFACE_LOG_LEVEL'] = 'error'
+# DeepFace expects a numeric logging level (e.g. str(logging.ERROR) == '40'), not the word 'error'.
+# The previous value caused DeepFace to fail parsing it and fall back to INFO-level logging.
+os.environ['DEEPFACE_LOG_LEVEL'] = str(logging.ERROR)
 
 class SpoofingDetectedError(Exception):
     pass
 
-def check_liveness(img_rgb):
+def _reject_or_accept(is_real, score):
+    print(f"🕵️ DEBUG: Anti-spoof check | Score: {score} | Is Real: {is_real}")
+
+    if is_real is False:
+        # 🚨 Strict Enforcement: If model says spoof, we reject.
+        # Score is probability of being real.
+        print(f"🚨 REJECTED: Anti-spoofing model flagged this as a spoof (Score: {score})")
+        return False
+
+    # Additional check: even if is_real is True, if score is very low, flag it
+    if score is not None and score < 0.25:
+        print(f"🚨 REJECTED: Low realness score despite 'is_real' flag (Score: {score})")
+        return False
+
+    return True
+
+
+def check_liveness(img_rgb, face_locations=None):
     """
-    Checks if the face is real using DeepFace's Anti-Spoofing (MiniFASNet).
+    Checks if the face is real using DeepFace's Anti-Spoofing (MiniFASNet/FasNet).
     Returns True if real, False if spoof.
-    Uses 'opencv' for speed as it's much faster than 'ssd'.
+
+    IMPORTANT: FasNet's model (see deepface/models/spoofing/FasNet.py `analyze()`) needs the
+    FULL frame plus the face's bounding box - it crops two different margins (2.7x and 4x)
+    around that box itself to compare the face against its surrounding background/context,
+    which is precisely how it tells a live face from a screen/photo/paper spoof. Passing it an
+    already-tightly-cropped face image (e.g. via detector_backend='skip', which treats the
+    whole input as the "facial area") leaves no background for those margin crops to include -
+    they collapse back to the same tight crop, starving the model of the signal it needs and
+    making it prone to misclassifying real, live faces as spoofed.
+
+    So when `face_locations` (from face_recognition's own HOG detector) is provided, we call
+    the FasNet model directly on the FULL frame with that real bounding box - still avoiding a
+    second full-frame MTCNN detection pass (the original optimization goal), but without
+    breaking the model's expected input.
     """
     try:
         # Convert RGB to BGR for DeepFace/OpenCV
         img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-        
-        # Run Anti-Spoofing
-        # 'mtcnn' is much more robust for anti-spoofing than 'opencv'
-        detector = 'mtcnn' 
+
+        if face_locations:
+            top, right, bottom, left = face_locations[0]
+            x, y = max(0, left), max(0, top)
+            w, h = max(1, right - left), max(1, bottom - top)
+
+            try:
+                from deepface.modules import modeling
+                antispoof_model = modeling.build_model(task="spoofing", model_name="Fasnet")
+                is_real, score = antispoof_model.analyze(img=img_bgr, facial_area=(x, y, w, h))
+            except Exception as e:
+                print(f"⚠️ DeepFace liveness check failed: {e}")
+                return True  # Fail-open for usability if model fails
+
+            return _reject_or_accept(is_real, score)
+
+        # No prior detection available (defensive fallback) - let DeepFace detect + anti-spoof
+        # together on the full frame. 'mtcnn' is much more robust for anti-spoofing than 'opencv'.
         try:
             faces = DeepFace.extract_faces(
                 img_path=img_bgr,
-                detector_backend=detector, 
+                detector_backend='mtcnn',
                 enforce_detection=False,
                 align=True,
                 anti_spoofing=True
             )
         except Exception as e:
             print(f"⚠️ DeepFace liveness check failed: {e}")
-            return True # Fail-open for usability if model fails
-        
+            return True  # Fail-open for usability if model fails
+
         if not faces:
             # If no face detected by DeepFace, we let face_recognition handle detection
             return True
-            
-        for face in faces:
-            is_real = face.get("is_real")
-            score = face.get("antispoof_score", None)
-            
-            print(f"🕵️ DEBUG: Anti-spoof check | Score: {score} | Is Real: {is_real}")
 
-            if is_real is False:
-                # 🚨 Strict Enforcement: If model says spoof, we reject.
-                # Score is probability of being real. 
-                print(f"🚨 REJECTED: Anti-spoofing model flagged this as a spoof (Score: {score})")
+        for face in faces:
+            if not _reject_or_accept(face.get("is_real"), face.get("antispoof_score", None)):
                 return False
-            
-            # Additional check: even if is_real is True, if score is very low, flag it
-            if score is not None and score < 0.25:
-                print(f"🚨 REJECTED: Low realness score despite 'is_real' flag (Score: {score})")
-                return False
-                
+
         return True
-        
+
     except Exception as e:
         print(f"⚠️ Anti-spoofing error: {e}")
         return True # Fail-open to avoid blocking legit users on system errors
@@ -86,9 +120,14 @@ def imagefile_to_encoding(file_obj) -> tuple:
             scale = 800 / max(h, w)
             img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
+        # ✅ Detect the face location once (HOG) and reuse it for both the liveness
+        # check and the encoding step below, instead of letting DeepFace (MTCNN)
+        # and face_recognition each run their own independent full-frame detector.
+        face_locations = face_recognition.face_locations(img, model='hog')
+
         # (CLAHE removed here to avoid double processing and to keep original image for liveness check)
         # ✅ Anti-Spoofing Check
-        is_real = check_liveness(img)
+        is_real = check_liveness(img, face_locations)
         if not is_real:
             print("⚠️ Spoofing attempt detected (flagged)!")
 
@@ -104,9 +143,9 @@ def imagefile_to_encoding(file_obj) -> tuple:
         except Exception as e:
             print(f"⚠️ CLAHE processing error, continuing with original image: {e}")
 
-        # ✅ Face Encoding with model='hog' (Standard) or 'cnn' (Very Slow but Accurate)
-        # We stick to HOG for speed but ensure we handle multiple faces
-        encodings = face_recognition.face_encodings(img)
+        # ✅ Face Encoding — reuse the face_locations detected above instead of
+        # letting face_encodings() re-run HOG detection internally.
+        encodings = face_recognition.face_encodings(img, known_face_locations=face_locations)
         
         if not encodings:
             return [], is_real

@@ -8,9 +8,14 @@ class Employee(models.Model):
     
     # Latest/current face encoding
     current_face_encoding = models.JSONField(blank=True, null=True, default=list)
-    
+
     # Store all past face encodings
     face_encoding_data_history = models.JSONField(blank=True, null=True, default=list)
+
+    # Active pool of encodings used for 1:N matching (e.g. up to 3 angles captured at
+    # registration). Falls back to current_face_encoding alone when empty, so employees
+    # registered before this field existed keep matching exactly as before.
+    face_encodings = models.JSONField(blank=True, null=True, default=list)
     
     # Store image hash (for duplicate check)
     image_md5 = models.CharField(max_length=64, blank=True, null=True)
@@ -54,7 +59,7 @@ class Register(models.Model):
     role             = models.CharField(max_length=500)
     password         = models.CharField(max_length=500)
     confirmPassword  = models.CharField(max_length=500)
-    allowed_ip       = models.CharField(max_length=45, unique=True, null=True, blank=True)
+    allowed_ip       = models.CharField(max_length=45, null=True, blank=True)
     employee_id      = models.CharField(max_length=50, null=True, blank=True)
     department       = models.CharField(max_length=100, null=True, blank=True)
     device           = models.CharField(max_length=255, unique=True, null=True, blank=True)
@@ -131,3 +136,41 @@ class EmployeeShiftSchedule(models.Model):
 
     def __str__(self):
         return f"{self.employee.name} - {self.date} - {self.shift.name}"
+
+def generate_leavetype_id():
+    last_leave_type = LeaveType.objects.all().order_by('id').last()
+    if not last_leave_type:
+        return 1
+    return last_leave_type.id + 1
+
+class LeaveType(models.Model):
+    id        = models.IntegerField(primary_key=True, default=generate_leavetype_id, editable=False)
+    name      = models.CharField(max_length=50, unique=True)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.name
+
+def generate_leave_id():
+    last_leave = LeaveRequest.objects.all().order_by('id').last()
+    if not last_leave:
+        return 1
+    return last_leave.id + 1
+
+class LeaveRequest(models.Model):
+    id = models.IntegerField(primary_key=True, default=generate_leave_id, editable=False)
+    employee_id = models.CharField(max_length=50) # Matching employee_id type
+    employee_name = models.CharField(max_length=150, null=True, blank=True)
+    department = models.CharField(max_length=100, null=True, blank=True)
+    department_id = models.CharField(max_length=50, null=True, blank=True)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    leave_type = models.CharField(max_length=50) # e.g. Sick, Casual, Annual
+    reason = models.TextField()
+    status = models.CharField(max_length=20, default='Pending') # Pending, Approved, Rejected
+    applied_on = models.DateTimeField(auto_now_add=True)
+    reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_leaves')
+    reviewed_by_name = models.CharField(max_length=150, null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.employee_id} - {self.leave_type} - {self.status}"
