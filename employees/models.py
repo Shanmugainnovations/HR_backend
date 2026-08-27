@@ -211,3 +211,28 @@ class CanteenTokenIssue(models.Model):
 
     def __str__(self):
         return f"{self.token_number} - {self.employee_id} ({self.employee_name}) @ {self.issued_at}"
+
+class Notification(models.Model):
+    CATEGORY_CHOICES = (
+        ('leave', 'Leave Update'),
+        ('shift', 'Shift Roster'),
+        ('canteen', 'Canteen Token'),
+        ('announcement', 'Announcement'),
+        ('general', 'General Alert'),
+    )
+
+    id = models.AutoField(primary_key=True)
+    employee_id = models.CharField(max_length=50, db_index=True)
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='general')
+    is_read = models.BooleanField(default=False)
+    action_url = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.employee_id} - {self.title} (Read: {self.is_read})"

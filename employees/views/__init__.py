@@ -59,3 +59,10 @@ from .canteen import (
     manage_canteen_rules
 )
 
+from .mobile_app.notifications import (
+    get_employee_notifications,
+    mark_notifications_read,
+    get_unread_count
+)
+
+

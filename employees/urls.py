@@ -6,6 +6,12 @@ from .views.shifts import (
     department_list_create, department_detail,
     get_monthly_roster, assign_shift
 )
+from .views.mobile_app.notifications import (
+    get_employee_notifications,
+    mark_notifications_read,
+    get_unread_count
+)
+
 
 urlpatterns = [
     path('hrregistration/', views.registration),
@@ -75,5 +81,12 @@ urlpatterns = [
     path('canteen/today-summary/', views.get_canteen_today_summary, name='canteen-today-summary'),
     path('canteen/history/', views.get_canteen_token_history, name='canteen-history'),
     path('canteen/rules/', views.manage_canteen_rules, name='canteen-rules'),
+
+    # Employee Notifications
+    path('employee/notifications/', get_employee_notifications, name='employee-notifications'),
+    path('employee/notifications/mark-read/', mark_notifications_read, name='mark-notifications-read'),
+    path('employee/notifications/unread-count/', get_unread_count, name='get-unread-count'),
+
 ]
+
 
