@@ -220,7 +220,33 @@ def update_leave_status(request, leave_id):
                 import traceback
                 traceback.print_exc()
                 print("Failed to update roster on leave approval:", roster_e)
-                
+
+        # Auto-create real-time notification for the employee
+        try:
+            from .mobile_app.notifications import get_notifications_collection
+            col = get_notifications_collection()
+            now_dt = datetime.now()
+            status_icon = "✅" if status_val == 'Approved' else "❌"
+            title = f"Leave Request {status_val} {status_icon}"
+            start_str = leave.start_date.strftime('%d %b %Y') if hasattr(leave.start_date, 'strftime') else str(leave.start_date)
+            end_str = leave.end_date.strftime('%d %b %Y') if hasattr(leave.end_date, 'strftime') else str(leave.end_date)
+            
+            by_str = f" by {reviewer_name}" if reviewer_name else ""
+            message = f"Your request for {leave.leave_type} ({start_str} to {end_str}) has been {status_val.lower()}{by_str}."
+
+            col.insert_one({
+                "employee_id": str(leave.employee_id),
+                "title": title,
+                "message": message,
+                "category": "leave",
+                "is_read": False,
+                "action_url": "",
+                "created_at": now_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                "created_at_ts": now_dt.timestamp()
+            })
+        except Exception as notif_err:
+            print("Error pushing leave notification", notif_err)
+            
         return Response({"message": f"Leave {status_val}"}, status=200)
     except LeaveRequest.DoesNotExist:
         return Response({"error": "Leave request not found"}, status=404)
