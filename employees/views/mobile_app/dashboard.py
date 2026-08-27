@@ -6,15 +6,19 @@ from django.utils import timezone
 import datetime
 import pytz
 
+from employees.decorators import token_required
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def today_status(request):
     """
     Mobile App Dashboard API: Fetches today's shift timing, punch-in status,
     and upcoming week roster for the logged-in employee.
     """
     try:
-        employee_id = request.GET.get('employee_id')
+        employee_id = getattr(request, 'authenticated_employee_id', None) or request.GET.get('employee_id')
+
         if not employee_id:
             return Response({"error": "Employee ID is required"}, status=400)
         ist_tz = pytz.timezone('Asia/Kolkata')

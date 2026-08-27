@@ -8,15 +8,19 @@ import pytz
 import calendar
 import collections
 
+from employees.decorators import token_required
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def my_attendance_report(request):
     """
     Mobile App Monthly Attendance API: High-performance attendance report 
     with IST timezone normalization and single-query JOIN shift lookups.
     """
     try:
-        employee_id = request.GET.get('employee_id')
+        employee_id = getattr(request, 'authenticated_employee_id', None) or request.GET.get('employee_id')
+
         month_str = request.GET.get('month') # YYYY-MM
         
         if not employee_id:

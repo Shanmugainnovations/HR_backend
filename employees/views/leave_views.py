@@ -7,6 +7,8 @@ from employees.serializers import LeaveTypeSerializer
 from django.utils import timezone
 from datetime import datetime, timedelta
 
+from employees.decorators import token_required
+
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
 def leave_type_list_create(request):
@@ -47,9 +49,10 @@ def leave_type_detail(request, pk):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@token_required
 def apply_leave(request):
     try:
-        employee_id = request.data.get('employee_id')
+        employee_id = getattr(request, 'authenticated_employee_id', None) or request.data.get('employee_id')
         if not employee_id:
             return Response({"error": "Employee ID is required"}, status=400)
             
@@ -69,9 +72,10 @@ def apply_leave(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def my_leaves(request):
     try:
-        employee_id = request.GET.get('employee_id')
+        employee_id = getattr(request, 'authenticated_employee_id', None) or request.GET.get('employee_id')
         if not employee_id:
             return Response({"error": "Employee ID is required"}, status=400)
             
@@ -94,8 +98,8 @@ def my_leaves(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def pending_leaves(request):
-    # This would typically be for Admin/HR
     try:
         department_id = request.GET.get('department_id')
         department = request.GET.get('department')
@@ -103,10 +107,8 @@ def pending_leaves(request):
         leaves = LeaveRequest.objects.all().order_by('-applied_on')
         
         if department:
-            # First try filtering by department name
             leaves = leaves.filter(department=department)
         elif department_id:
-            # Fallback to department_id
             leaves = leaves.filter(department_id=department_id)
             
         data = [{
@@ -129,6 +131,7 @@ def pending_leaves(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def leave_history(request):
     try:
         status_filter = request.GET.get('status')
@@ -137,7 +140,6 @@ def leave_history(request):
         from_date = request.GET.get('from_date')
         to_date = request.GET.get('to_date')
         
-        # Start with processed leaves
         leaves = LeaveRequest.objects.exclude(status='Pending')
         
         if status_filter:
@@ -172,7 +174,9 @@ def leave_history(request):
 
 @api_view(['PUT'])
 @permission_classes([AllowAny])
+@token_required
 def update_leave_status(request, leave_id):
+
     try:
         status_val = request.data.get('status')
         reviewer_name = request.data.get('reviewer_name')
