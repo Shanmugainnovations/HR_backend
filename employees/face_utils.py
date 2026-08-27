@@ -188,11 +188,19 @@ def match_face_1_to_n(unknown_encoding, known_matrix, employee_meta, threshold=0
         tuple: (matched_meta, best_distance, error_reason)
         If matched_meta is None, verification failed for the reason in error_reason.
     """
+    if isinstance(unknown_encoding, tuple) and len(unknown_encoding) == 2:
+        unknown_encoding = unknown_encoding[0]
+
     if unknown_encoding is None or len(unknown_encoding) == 0 or known_matrix is None or len(known_matrix) == 0 or not employee_meta:
         return None, 999.0, "No registered employees found or invalid encoding."
 
-    unknown = np.array(unknown_encoding)
+    unknown = np.array(unknown_encoding).flatten()
+    if len(unknown) != 128:
+        return None, 999.0, "Invalid face encoding shape."
+
     distances = np.linalg.norm(known_matrix - unknown, axis=1)
+
+
 
     # Group minimum distance by unique employee_id
     emp_best_dist = {}

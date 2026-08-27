@@ -70,4 +70,10 @@ urlpatterns = [
     
     path('roster-report/', reports.roster_attendance_report, name='roster-attendance-report'),
 
+    # Canteen Token Endpoints
+    path('canteen/issue-token/', views.issue_canteen_token, name='canteen-issue-token'),
+    path('canteen/today-summary/', views.get_canteen_today_summary, name='canteen-today-summary'),
+    path('canteen/history/', views.get_canteen_token_history, name='canteen-history'),
+    path('canteen/rules/', views.manage_canteen_rules, name='canteen-rules'),
 ]
+

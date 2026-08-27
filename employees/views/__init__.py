@@ -51,3 +51,11 @@ from .shifts import (
     department_list_create, department_detail,
     get_monthly_roster, assign_shift
 )
+
+from .canteen import (
+    issue_canteen_token,
+    get_canteen_today_summary,
+    get_canteen_token_history,
+    manage_canteen_rules
+)
+
