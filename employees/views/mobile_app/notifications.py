@@ -10,9 +10,10 @@ from employees.decorators import token_required
 
 def get_notifications_collection():
     client = get_mongo_client()
-    db_name = os.environ.get("GLOBAL_DB_NAME", "Global")
+    db_name = os.environ.get("HR_DB_NAME", "HR")
     db = client[db_name]
     return db['employees_notification']
+
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
