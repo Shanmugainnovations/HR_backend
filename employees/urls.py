@@ -10,8 +10,10 @@ from .views.mobile_app.notifications import (
     get_employee_notifications,
     mark_notifications_read,
     clear_notifications,
-    get_unread_count
+    get_unread_count,
+    send_admin_notification
 )
+
 
 
 
@@ -89,6 +91,8 @@ urlpatterns = [
     path('employee/notifications/mark-read/', mark_notifications_read, name='mark-notifications-read'),
     path('employee/notifications/clear/', clear_notifications, name='clear-notifications'),
     path('employee/notifications/unread-count/', get_unread_count, name='get-unread-count'),
+    path('admin/send-notification/', send_admin_notification, name='admin-send-notification'),
+
 
 
 ]

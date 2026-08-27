@@ -71,12 +71,14 @@ def mark_notifications_read(request):
     try:
         col = get_notifications_collection()
         if mark_all:
-            res = col.update_many({"employee_id": str(emp_id), "is_read": False}, {"$set": {"is_read": True}})
+            emp_match = [str(emp_id)]
+            if str(emp_id).isdigit(): emp_match.append(int(emp_id))
+            res = col.update_many({"employee_id": {"$in": emp_match}, "is_read": False}, {"$set": {"is_read": True}})
             return Response({"message": "All notifications marked as read", "updated_count": res.modified_count})
 
         if notification_id:
             from bson import ObjectId
-            query = {"employee_id": str(emp_id)}
+            query = {}
             try:
                 query["_id"] = ObjectId(notification_id)
             except Exception:
@@ -88,6 +90,7 @@ def mark_notifications_read(request):
         return Response({"error": "Either notification_id or mark_all parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -103,12 +106,14 @@ def clear_notifications(request):
     try:
         col = get_notifications_collection()
         if clear_all:
-            res = col.delete_many({"employee_id": str(emp_id)})
+            emp_match = [str(emp_id)]
+            if str(emp_id).isdigit(): emp_match.append(int(emp_id))
+            res = col.delete_many({"employee_id": {"$in": emp_match}})
             return Response({"message": "All notifications cleared", "deleted_count": res.deleted_count})
 
         if notification_id:
             from bson import ObjectId
-            query = {"employee_id": str(emp_id)}
+            query = {}
             try:
                 query["_id"] = ObjectId(notification_id)
             except Exception:
@@ -120,6 +125,7 @@ def clear_notifications(request):
         return Response({"error": "Either notification_id or clear_all parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -133,11 +139,83 @@ def get_unread_count(request):
     try:
         col = get_notifications_collection()
         emp_match = [str(emp_id)]
-        if str(emp_id).isdigit():
-            emp_match.append(int(emp_id))
+        if str(emp_id).isdigit(): emp_match.append(int(emp_id))
 
         count = col.count_documents({"employee_id": {"$in": emp_match}, "is_read": False})
         return Response({"employee_id": str(emp_id), "unread_count": count})
     except Exception as e:
         return Response({"unread_count": 0})
 
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@token_required
+def send_admin_notification(request):
+    """
+    Admin Broadcast Notification API: Sends targeted or broadcast notifications
+    to all employees, specific department, or single employee.
+    """
+    target_type = request.data.get('target_type', 'all')  # 'all', 'department', 'employee'
+    target_dept = request.data.get('department_name') or request.data.get('department')
+    target_emp = request.data.get('employee_id')
+    title = request.data.get('title')
+    message = request.data.get('message')
+    category = request.data.get('category', 'announcement')
+
+    if not title or not message:
+        return Response({"error": "Title and Message are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        col = get_notifications_collection()
+        now_dt = datetime.now()
+        now_str = now_dt.strftime('%Y-%m-%d %H:%M:%S')
+        now_ts = now_dt.timestamp()
+
+        emp_ids = []
+
+        if target_type == 'employee':
+            if not target_emp:
+                return Response({"error": "Target employee_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+            emp_ids = [str(target_emp)]
+
+        elif target_type == 'department':
+            if not target_dept:
+                return Response({"error": "Target department is required"}, status=status.HTTP_400_BAD_REQUEST)
+            from employees.models import Register
+            users = Register.objects.filter(department__icontains=target_dept).values_list('employee_id', flat=True)
+            emp_ids = [str(eid) for eid in users if eid]
+
+        else:  # 'all'
+            from employees.models import Register
+            users = Register.objects.all().values_list('employee_id', flat=True)
+            emp_ids = [str(eid) for eid in users if eid]
+
+        if not emp_ids:
+            return Response({"error": "No matching employees found for target selection"}, status=status.HTTP_404_NOT_FOUND)
+
+        documents = []
+        for eid in set(emp_ids):
+            documents.append({
+                "employee_id": str(eid),
+                "title": title,
+                "message": message,
+                "category": category,
+                "is_read": False,
+                "action_url": "",
+                "created_at": now_str,
+                "created_at_ts": now_ts,
+                "sent_by": request.data.get('sent_by', 'Admin')
+            })
+
+        if documents:
+            col.insert_many(documents)
+
+        return Response({
+            "success": True,
+            "message": f"Notification successfully sent to {len(documents)} employee(s).",
+            "sent_count": len(documents)
+        }, status=status.HTTP_201_CREATED)
+
+    except Exception as e:
+        print("Error sending admin notification", e)
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
