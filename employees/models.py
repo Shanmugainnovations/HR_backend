@@ -174,3 +174,40 @@ class LeaveRequest(models.Model):
 
     def __str__(self):
         return f"{self.employee_id} - {self.leave_type} - {self.status}"
+
+class CanteenItem(models.Model):
+    id = models.AutoField(primary_key=True)
+    name = models.CharField(max_length=100, default='Tea')
+    code = models.CharField(max_length=20, default='TEA', unique=True)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+
+class CanteenQuotaRule(models.Model):
+    id = models.AutoField(primary_key=True)
+    max_daily_quota = models.IntegerField(default=1)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Daily Quota: {self.max_daily_quota} token(s)"
+
+class CanteenTokenIssue(models.Model):
+    STATUS_CHOICES = (('ISSUED', 'ISSUED'), ('REDEEMED', 'REDEEMED'), ('CANCELLED', 'CANCELLED'))
+
+    id = models.AutoField(primary_key=True)
+    token_number = models.CharField(max_length=50, unique=True)
+    employee_id = models.CharField(max_length=50)
+    employee_name = models.CharField(max_length=150, null=True, blank=True)
+    department = models.CharField(max_length=100, null=True, blank=True)
+    item_name = models.CharField(max_length=50, default='Tea')
+    issued_at = models.DateTimeField(auto_now_add=True)
+    confidence = models.FloatField(null=True, blank=True)
+    device_id = models.CharField(max_length=50, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ISSUED')
+    reprint_count = models.IntegerField(default=0)
+
+    def __str__(self):
+        return f"{self.token_number} - {self.employee_id} ({self.employee_name}) @ {self.issued_at}"

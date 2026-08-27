@@ -232,8 +232,10 @@ def login(request):
         if not user:
                 return Response({"error": "User not found"}, status=404)
 
-        if user.password != password:
+        from django.contrib.auth.hashers import check_password
+        if not check_password(password, user.password) and user.password != password:
             return Response({"error": "Invalid password"}, status=401)
+
 
         # Final department resolution
         dept_id = user.department if user.department else "Unassigned"
