@@ -241,12 +241,9 @@ def login(request):
         dept_id = user.department if user.department else "Unassigned"
         dept_name = resolve_department_names(dept_id)
 
-        # Construct Token
-        token = "dummy-token-for-web-user"
-        if user.device:
-            device_name = user.device
-            token_env_key = f"{device_name}_TOKEN"
-            token = os.getenv(token_env_key) or token
+        # Construct Cryptographic JWT Access Token
+        from employees.token_utils import generate_employee_token
+        token = generate_employee_token(user.employee_id, user.role)
 
         return Response({
             "message": f"Login successful as {user.role}",
@@ -259,6 +256,7 @@ def login(request):
             "department_name": dept_name, # Resolved name(s)
             "token": token
         }, status=200)
+
 
     except Exception as e:
         return Response({"error": str(e)}, status=500)

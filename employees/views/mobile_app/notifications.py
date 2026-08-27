@@ -6,6 +6,8 @@ import os
 from datetime import datetime
 from ..utils import get_mongo_client
 
+from employees.decorators import token_required
+
 def get_notifications_collection():
     client = get_mongo_client()
     db_name = os.environ.get("GLOBAL_DB_NAME", "Global")
@@ -14,8 +16,10 @@ def get_notifications_collection():
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def get_employee_notifications(request):
-    emp_id = request.query_params.get('employee_id')
+    emp_id = getattr(request, 'authenticated_employee_id', None) or request.query_params.get('employee_id')
+
     if not emp_id:
         return Response({"error": "employee_id query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -49,8 +53,9 @@ def get_employee_notifications(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@token_required
 def mark_notifications_read(request):
-    emp_id = request.data.get('employee_id')
+    emp_id = getattr(request, 'authenticated_employee_id', None) or request.data.get('employee_id')
     notification_id = request.data.get('notification_id')
     mark_all = request.data.get('mark_all', False)
 
@@ -80,8 +85,9 @@ def mark_notifications_read(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@token_required
 def clear_notifications(request):
-    emp_id = request.data.get('employee_id')
+    emp_id = getattr(request, 'authenticated_employee_id', None) or request.data.get('employee_id')
     notification_id = request.data.get('notification_id')
     clear_all = request.data.get('clear_all', False)
 
@@ -111,8 +117,10 @@ def clear_notifications(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def get_unread_count(request):
-    emp_id = request.query_params.get('employee_id')
+    emp_id = getattr(request, 'authenticated_employee_id', None) or request.query_params.get('employee_id')
+
     if not emp_id:
         return Response({"error": "employee_id query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
 
