@@ -85,7 +85,9 @@ urlpatterns = [
     # Employee Notifications
     path('employee/notifications/', get_employee_notifications, name='employee-notifications'),
     path('employee/notifications/mark-read/', mark_notifications_read, name='mark-notifications-read'),
+    path('employee/notifications/clear/', clear_notifications, name='clear-notifications'),
     path('employee/notifications/unread-count/', get_unread_count, name='get-unread-count'),
+
 
 ]
 

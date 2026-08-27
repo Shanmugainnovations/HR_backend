@@ -23,51 +23,6 @@ def get_employee_notifications(request):
         col = get_notifications_collection()
         docs = list(col.find({"employee_id": str(emp_id)}).sort("created_at_ts", -1))
 
-        # Seed sample notifications if empty
-        if not docs:
-            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            now_ts = datetime.now().timestamp()
-            sample_alerts = [
-              {
-                "employee_id": str(emp_id),
-                "title": "Shift Schedule Updated 📅",
-                "message": "Your duty roster for this month has been published. Check your assigned shifts.",
-                "category": "shift",
-                "is_read": False,
-                "created_at": now_str,
-                "created_at_ts": now_ts,
-              },
-              {
-                "employee_id": str(emp_id),
-                "title": "Tea Token Issued ☕",
-                "message": "Your daily tea token voucher was generated successfully at OPD Canteen.",
-                "category": "canteen",
-                "is_read": False,
-                "created_at": now_str,
-                "created_at_ts": now_ts - 3600,
-              },
-              {
-                "employee_id": str(emp_id),
-                "title": "Leave Request Approved ✅",
-                "message": "Your recent leave request for Casual Leave has been reviewed and approved.",
-                "category": "leave",
-                "is_read": True,
-                "created_at": now_str,
-                "created_at_ts": now_ts - 86400,
-              },
-              {
-                "employee_id": str(emp_id),
-                "title": "Welcome to Shanmuga HR 📢",
-                "message": "Access your attendance, leaves, duty roster, and tea tokens directly from your mobile app.",
-                "category": "announcement",
-                "is_read": True,
-                "created_at": now_str,
-                "created_at_ts": now_ts - 172800,
-              }
-            ]
-            col.insert_many(sample_alerts)
-            docs = list(col.find({"employee_id": str(emp_id)}).sort("created_at_ts", -1))
-
         data = []
         unread_count = 0
         for doc in docs:
@@ -120,6 +75,37 @@ def mark_notifications_read(request):
             return Response({"message": "Notification marked as read", "notification_id": notification_id})
 
         return Response({"error": "Either notification_id or mark_all parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def clear_notifications(request):
+    emp_id = request.data.get('employee_id')
+    notification_id = request.data.get('notification_id')
+    clear_all = request.data.get('clear_all', False)
+
+    if not emp_id:
+        return Response({"error": "employee_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        col = get_notifications_collection()
+        if clear_all:
+            res = col.delete_many({"employee_id": str(emp_id)})
+            return Response({"message": "All notifications cleared", "deleted_count": res.deleted_count})
+
+        if notification_id:
+            from bson import ObjectId
+            query = {"employee_id": str(emp_id)}
+            try:
+                query["_id"] = ObjectId(notification_id)
+            except Exception:
+                query["_id"] = notification_id
+
+            col.delete_one(query)
+            return Response({"message": "Notification cleared", "notification_id": notification_id})
+
+        return Response({"error": "Either notification_id or clear_all parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

@@ -12,6 +12,7 @@ from .leaves import (
 from .notifications import (
     get_employee_notifications,
     mark_notifications_read,
+    clear_notifications,
     get_unread_count
 )
 
@@ -27,6 +28,8 @@ __all__ = [
     'leave_type_detail',
     'get_employee_notifications',
     'mark_notifications_read',
+    'clear_notifications',
     'get_unread_count'
 ]
+
 
