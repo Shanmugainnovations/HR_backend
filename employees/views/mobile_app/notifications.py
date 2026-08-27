@@ -26,7 +26,11 @@ def get_employee_notifications(request):
 
     try:
         col = get_notifications_collection()
-        docs = list(col.find({"employee_id": str(emp_id)}).sort("created_at_ts", -1))
+        emp_match = [str(emp_id)]
+        if str(emp_id).isdigit():
+            emp_match.append(int(emp_id))
+
+        docs = list(col.find({"employee_id": {"$in": emp_match}}).sort([("_id", -1)]))
 
         data = []
         unread_count = 0
@@ -44,13 +48,14 @@ def get_employee_notifications(request):
             })
 
         return Response({
-            "employee_id": emp_id,
+            "employee_id": str(emp_id),
             "unread_count": unread_count,
             "notifications": data
         })
     except Exception as e:
         print("Error fetching notifications via PyMongo", e)
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -127,7 +132,12 @@ def get_unread_count(request):
 
     try:
         col = get_notifications_collection()
-        count = col.count_documents({"employee_id": str(emp_id), "is_read": False})
-        return Response({"employee_id": emp_id, "unread_count": count})
+        emp_match = [str(emp_id)]
+        if str(emp_id).isdigit():
+            emp_match.append(int(emp_id))
+
+        count = col.count_documents({"employee_id": {"$in": emp_match}, "is_read": False})
+        return Response({"employee_id": str(emp_id), "unread_count": count})
     except Exception as e:
         return Response({"unread_count": 0})
+
