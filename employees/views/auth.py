@@ -135,7 +135,7 @@ def registration(request):
                 return Response({"error": "IP already assigned"}, status=400)
 
             # 🔴 Create user via ORM for automatic ID generation
-            user = Register.objects.create(
+            user = Register(
                 name=name,
                 employee_id=employee_id,
                 department=department,
@@ -146,6 +146,7 @@ def registration(request):
                 device=device,
                 fingerprint=fingerprint
             )
+            user.save_with_audit(request)
 
             return Response({
                 "message": "User created successfully",
@@ -190,8 +191,9 @@ def registration(request):
                 if device_obj:
                     user.device = device_obj.label
 
-            user.save()
+            user.save_with_audit(request)
             return Response({"message": "Updated successfully"}, status=200)
+
 
         # ======================================================
         # ✅ DELETE USER
@@ -243,7 +245,8 @@ def login(request):
 
         # Construct Cryptographic JWT Access Token
         from employees.token_utils import generate_employee_token
-        token = generate_employee_token(user.employee_id, user.role)
+        token = generate_employee_token(user.employee_id or user.name or "Admin", user.role)
+
 
         return Response({
             "message": f"Login successful as {user.role}",

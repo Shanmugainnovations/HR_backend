@@ -158,5 +158,6 @@ CORS_ALLOW_HEADERS = [
     'Authorization',
     'content-type',
     'x-user-role',
-    'x-device-id'   
+    'x-device-id',
+    "x-employee-id"  
 ]

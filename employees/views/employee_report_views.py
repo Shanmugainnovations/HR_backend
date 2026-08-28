@@ -2,13 +2,16 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from employees.models import EmployeeAttendance, EmployeeShiftSchedule, Employee, Shift
+from employees.decorators import token_required
 from django.utils import timezone
 import datetime
 import pytz
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def my_attendance_report(request):
+
     try:
         employee_id = request.GET.get('employee_id')
         month_str = request.GET.get('month') # YYYY-MM

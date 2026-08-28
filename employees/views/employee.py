@@ -242,9 +242,20 @@ def get_employee_detail(request, employee_id):
         client = get_mongo_client()
 
         # 2️⃣ Find employee in SQL
+        # Lookup Register record for ID card info
+        from employees.models import Register
+        from .auth import resolve_department_names
+        reg = Register.objects.filter(employee_id=employee_id).first()
+
+        dept_name = resolve_department_names(reg.department) if reg and reg.department else "General Medical Services"
+        designation = getattr(reg, 'designation', '') or (reg.role if reg else '') or "Healthcare Professional"
+        blood_group = getattr(reg, 'blood_group', '') or "O +ve"
+        emergency_contact = getattr(reg, 'emergency_contact', '') or getattr(reg, 'phone', '') or "+91 98765 43210"
+        joining_date = str(getattr(reg, 'date_of_joining', '')) or "15 Jan 2024"
+
         emp = Employee.objects.filter(employee_id=employee_id).first()
-        
         if emp:
+
             fs_hr = gridfs.GridFS(client[hr_db_name])
             fs_global = gridfs.GridFS(client[global_db_name])
             base64_img = None
@@ -264,6 +275,12 @@ def get_employee_detail(request, employee_id):
                 "name": emp.name,
                 "is_active": emp.is_active,
                 "image_preview": base64_img,
+                "department_name": dept_name,
+                "designation": designation,
+                "blood_group": blood_group,
+                "emergency_contact": emergency_contact,
+                "joining_date": joining_date,
+                "role": reg.role if reg else "Employee",
                 "is_registered_face": True
             }, status=200)
 
@@ -283,9 +300,16 @@ def get_employee_detail(request, employee_id):
                 "name": profile.get("employeeName", ""),
                 "is_active": False,
                 "image_preview": preview_url,
+                "department_name": dept_name,
+                "designation": designation,
+                "blood_group": blood_group,
+                "emergency_contact": emergency_contact,
+                "joining_date": joining_date,
+                "role": reg.role if reg else "Employee",
                 "is_registered_face": False,
                 "message": "Found in Global Profile (Face not yet registered in HR)"
             }, status=200)
+
 
         return JsonResponse({"error": "Employee not found in local records or global profiles"}, status=404)
 

@@ -5,10 +5,12 @@ from django.db.models import Q
 from ..models import Shift, Department
 from ..serializers import ShiftSerializer, DepartmentSerializer
 import os
-from pymongo import MongoClient
+from employees.decorators import token_required
 
 @api_view(['GET', 'POST'])
+@token_required
 def shift_list_create(request):
+
     if request.method == 'GET':
         department = request.query_params.get('department')
         if department and department != 'All':
@@ -32,11 +34,14 @@ def shift_list_create(request):
     elif request.method == 'POST':
         serializer = ShiftSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            from employees.models import extract_actor_id
+            actor_id = extract_actor_id(request)
+            shift = serializer.save(created_by=actor_id, lastmodified_by=actor_id)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET', 'PUT', 'DELETE'])
+@token_required
 def shift_detail(request, pk):
     try:
         shift = Shift.objects.get(pk=pk)
@@ -50,7 +55,9 @@ def shift_detail(request, pk):
     elif request.method == 'PUT':
         serializer = ShiftSerializer(shift, data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            from employees.models import extract_actor_id
+            actor_id = extract_actor_id(request)
+            shift = serializer.save(lastmodified_by=actor_id)
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -59,6 +66,7 @@ def shift_detail(request, pk):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 @api_view(['GET', 'POST'])
+@token_required
 def department_list_create(request):
     if request.method == 'GET':
         dept_ids = request.query_params.get('department')
@@ -82,11 +90,14 @@ def department_list_create(request):
     elif request.method == 'POST':
         serializer = DepartmentSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            from employees.models import extract_actor_id
+            actor_id = extract_actor_id(request)
+            dept = serializer.save(created_by=actor_id, lastmodified_by=actor_id)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET', 'PUT', 'DELETE'])
+@token_required
 def department_detail(request, pk):
     try:
         department = Department.objects.get(pk=pk)
@@ -100,9 +111,13 @@ def department_detail(request, pk):
     elif request.method == 'PUT':
         serializer = DepartmentSerializer(department, data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            from employees.models import extract_actor_id
+            actor_id = extract_actor_id(request)
+            dept = serializer.save(lastmodified_by=actor_id)
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 
 
 @api_view(['GET'])
@@ -210,6 +225,7 @@ def get_monthly_roster(request):
     return Response(data)
 
 @api_view(['POST'])
+@token_required
 def assign_shift(request):
     from ..models import EmployeeShiftSchedule, Employee, Shift
     from ..serializers import EmployeeShiftScheduleSerializer
@@ -233,11 +249,12 @@ def assign_shift(request):
                 if not shift_id:
                     EmployeeShiftSchedule.objects.filter(employee=employee, date=date).delete()
                 else:
-                    EmployeeShiftSchedule.objects.update_or_create(
+                    sch, _ = EmployeeShiftSchedule.objects.update_or_create(
                         employee=employee,
                         date=date,
                         defaults={'shift': Shift.objects.get(id=shift_id)}
                     )
+                    sch.save_with_audit(request)
             except Exception as e:
                 return Response({"error": f"Error with employee {employee_id}: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
         return Response({"message": "Bulk assignment successful"}, status=status.HTTP_200_OK)
@@ -262,13 +279,12 @@ def assign_shift(request):
             EmployeeShiftSchedule.objects.filter(employee=employee, date=date).delete()
             return Response({"message": "Shift assignment cleared"}, status=status.HTTP_200_OK)
 
-        schedule, created = EmployeeShiftSchedule.objects.update_or_create(
+        sch, _ = EmployeeShiftSchedule.objects.update_or_create(
             employee=employee,
             date=date,
             defaults={'shift': Shift.objects.get(id=shift_id)}
         )
-        serializer = EmployeeShiftScheduleSerializer(schedule)
-        return Response(serializer.data, status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED)
+        sch.save_with_audit(request)
+        return Response({"message": "Shift assigned successfully"}, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-

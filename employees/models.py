@@ -2,7 +2,114 @@ from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import User
 
+def extract_actor_id(request):
+    """
+    Bulletproof extraction of actor ID (Employee ID / Admin Username) from HTTP Request context.
+    """
+    if not request:
+        return "Admin"
+
+    # 1. From authenticated_employee_id attached by @token_required decorator
+    actor_id = getattr(request, 'authenticated_employee_id', None)
+    if actor_id:
+        return str(actor_id)
+
+    # 2. From token_payload
+    payload = getattr(request, 'token_payload', None)
+    if payload:
+        actor_id = payload.get('employee_id') or payload.get('name') or payload.get('sub')
+        if actor_id:
+            return str(actor_id)
+
+    # 3. Direct JWT Header Decoding
+    try:
+        auth_header = None
+        if hasattr(request, 'headers'):
+            auth_header = request.headers.get('Authorization') or request.headers.get('x-user-id') or request.headers.get('x-employee-id')
+        if not auth_header and hasattr(request, 'META'):
+            auth_header = request.META.get('HTTP_AUTHORIZATION') or request.META.get('HTTP_X_EMPLOYEE_ID') or request.META.get('HTTP_X_USER_ID')
+
+        if auth_header:
+            if auth_header.startswith('Bearer ') or len(auth_header) > 20:
+                parts = auth_header.split()
+                token = parts[1] if len(parts) == 2 else parts[0]
+                from employees.token_utils import decode_employee_token
+                dec_payload = decode_employee_token(token)
+                if dec_payload:
+                    actor_id = dec_payload.get('employee_id') or dec_payload.get('name') or dec_payload.get('role')
+                    if actor_id:
+                        return str(actor_id)
+            else:
+                return str(auth_header)
+    except Exception as e:
+        print("extract_actor_id exception:", e)
+
+    # 4. From custom headers (X-Employee-ID)
+    if hasattr(request, 'headers'):
+        actor_id = request.headers.get('X-Employee-ID') or request.headers.get('x-employee-id')
+        if actor_id:
+            return str(actor_id)
+    if hasattr(request, 'META'):
+        actor_id = request.META.get('HTTP_X_EMPLOYEE_ID') or request.META.get('HTTP_X_USER_ID')
+        if actor_id:
+            return str(actor_id)
+
+    # 5. From Django Session User or Request Data
+    if hasattr(request, 'user') and getattr(request.user, 'is_authenticated', False):
+        actor_id = getattr(request.user, 'username', None) or getattr(request.user, 'first_name', None)
+        if actor_id:
+            return str(actor_id)
+
+    if hasattr(request, 'data') and request.data:
+        actor_id = request.data.get('sent_by') or request.data.get('reviewer_name') or request.data.get('employee_id') or request.data.get('created_by') or request.data.get('user_id')
+        if actor_id:
+            return str(actor_id)
+
+    # Fallback to Admin if non-token/system action
+    return "Admin"
+
+
+class AuditableModel(models.Model):
+    """
+    Abstract base class providing standard enterprise audit tracking:
+    created_by, created_date, lastmodified_by, lastmodified_date
+    """
+    created_by = models.CharField(max_length=150, null=True, blank=True, help_text="User ID/Name who created this record")
+    created_date = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    lastmodified_by = models.CharField(max_length=150, null=True, blank=True, help_text="User ID/Name who last modified this record")
+    lastmodified_date = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        abstract = True
+
+    def save(self, *args, **kwargs):
+        # Guarantee created_by and lastmodified_by are never null
+        if not self.created_by:
+            self.created_by = "50867"
+        if not self.lastmodified_by:
+            self.lastmodified_by = getattr(self, 'created_by', '50867') or "50867"
+        super().save(*args, **kwargs)
+
+    def save_with_audit(self, request=None, user_id=None, *args, **kwargs):
+        actor_id = user_id or extract_actor_id(request)
+
+        if not self.created_by:
+            self.created_by = str(actor_id)
+        self.lastmodified_by = str(actor_id)
+
+        self.save(*args, **kwargs)
+        print(f"🔑 AUDIT SAVED -> Model: {self.__class__.__name__} | CreatedBy: {self.created_by} | LastModifiedBy: {self.lastmodified_by}")
+        return self
+
+
+
+
+
+
+
 class Employee(models.Model):
+
+
     employee_id = models.CharField(max_length=50, primary_key=True)
     name = models.CharField(max_length=100)
     
@@ -53,7 +160,7 @@ class EmployeeAttendance(models.Model):
     def __str__(self):
         return f"{self.employee_id} - {self.attendence_type} @ {self.attendence_time}"
 
-class Register(models.Model):
+class Register(AuditableModel):
     id               = models.AutoField(primary_key=True)
     name             = models.CharField(max_length=500)
     role             = models.CharField(max_length=500)
@@ -68,7 +175,7 @@ class Register(models.Model):
     def __str__(self):
         return f"{self.name} ({self.role}) — IP: {self.allowed_ip or 'N/A'}"
 
-class AllowedDevice(models.Model):
+class AllowedDevice(AuditableModel):
     """Global whitelist for face recognition endpoints."""
     id         = models.AutoField(primary_key=True)
     label      = models.CharField(max_length=100, help_text="e.g. 'OPD Kiosk 1'")
@@ -103,7 +210,7 @@ class FaceMismatchLog(models.Model):
     def __str__(self):
         return f"Mismatch: Verified {self.verified_employee_id} vs {self.mark_employee_id or 'Unknown'} @ {self.timestamp}"
 
-class Shift(models.Model):
+class Shift(AuditableModel):
     id         = models.AutoField(primary_key=True)
     name       = models.CharField(max_length=50, unique=True)
     start_time = models.TimeField()
@@ -113,7 +220,7 @@ class Shift(models.Model):
     def __str__(self):
         return f"{self.name} ({self.start_time} - {self.end_time})"
 
-class Department(models.Model):
+class Department(AuditableModel):
     id     = models.AutoField(primary_key=True)
     name   = models.CharField(max_length=100, unique=True)
     shifts = models.ManyToManyField(Shift, related_name='departments', blank=True)
@@ -121,7 +228,7 @@ class Department(models.Model):
     def __str__(self):
         return self.name
 
-class EmployeeShiftSchedule(models.Model):
+class EmployeeShiftSchedule(AuditableModel):
     id       = models.AutoField(primary_key=True)
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='shift_schedules')
     shift    = models.ForeignKey(Shift, on_delete=models.CASCADE)
@@ -143,7 +250,7 @@ def generate_leavetype_id():
         return 1
     return last_leave_type.id + 1
 
-class LeaveType(models.Model):
+class LeaveType(AuditableModel):
     id        = models.IntegerField(primary_key=True, default=generate_leavetype_id, editable=False)
     name      = models.CharField(max_length=50, unique=True)
     is_active = models.BooleanField(default=True)
@@ -157,7 +264,7 @@ def generate_leave_id():
         return 1
     return last_leave.id + 1
 
-class LeaveRequest(models.Model):
+class LeaveRequest(AuditableModel):
     id = models.IntegerField(primary_key=True, default=generate_leave_id, editable=False)
     employee_id = models.CharField(max_length=50) # Matching employee_id type
     employee_name = models.CharField(max_length=150, null=True, blank=True)
@@ -175,7 +282,7 @@ class LeaveRequest(models.Model):
     def __str__(self):
         return f"{self.employee_id} - {self.leave_type} - {self.status}"
 
-class CanteenItem(models.Model):
+class CanteenItem(AuditableModel):
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=100, default='Tea')
     code = models.CharField(max_length=20, default='TEA', unique=True)
@@ -184,7 +291,7 @@ class CanteenItem(models.Model):
     def __str__(self):
         return f"{self.name} ({self.code})"
 
-class CanteenQuotaRule(models.Model):
+class CanteenQuotaRule(AuditableModel):
     id = models.AutoField(primary_key=True)
     max_daily_quota = models.IntegerField(default=1)
     is_active = models.BooleanField(default=True)
@@ -194,7 +301,7 @@ class CanteenQuotaRule(models.Model):
     def __str__(self):
         return f"Daily Quota: {self.max_daily_quota} token(s)"
 
-class CanteenTokenIssue(models.Model):
+class CanteenTokenIssue(AuditableModel):
     STATUS_CHOICES = (('ISSUED', 'ISSUED'), ('REDEEMED', 'REDEEMED'), ('CANCELLED', 'CANCELLED'))
 
     id = models.AutoField(primary_key=True)
@@ -212,7 +319,7 @@ class CanteenTokenIssue(models.Model):
     def __str__(self):
         return f"{self.token_number} - {self.employee_id} ({self.employee_name}) @ {self.issued_at}"
 
-class Notification(models.Model):
+class Notification(AuditableModel):
     CATEGORY_CHOICES = (
         ('leave', 'Leave Update'),
         ('shift', 'Shift Roster'),

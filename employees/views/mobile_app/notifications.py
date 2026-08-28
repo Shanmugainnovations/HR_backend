@@ -15,6 +15,95 @@ def get_notifications_collection():
     return db['employees_notification']
 
 
+def send_expo_push_notification(employee_ids, title, body, data=None):
+    """
+    Sends real-time Expo system push notifications to mobile devices via Expo HTTP Push API.
+    """
+    if isinstance(employee_ids, (str, int)):
+        employee_ids = [str(employee_ids)]
+    else:
+        employee_ids = [str(eid) for eid in employee_ids if eid]
+
+    if not employee_ids:
+        return
+
+    try:
+        import requests
+        col = get_notifications_collection().database['employees_push_tokens']
+        
+        emp_matches = []
+        for eid in employee_ids:
+            emp_matches.append(str(eid))
+            if str(eid).isdigit():
+                emp_matches.append(int(eid))
+
+        tokens_docs = list(col.find({"employee_id": {"$in": emp_matches}}, {"push_token": 1}))
+        push_tokens = list(set([doc['push_token'] for doc in tokens_docs if doc.get('push_token')]))
+
+        if not push_tokens:
+            print(f"No active Expo push tokens found for employees {employee_ids}")
+            return
+
+        messages = []
+        for token in push_tokens:
+            messages.append({
+                "to": token,
+                "sound": "default",
+                "title": title,
+                "body": body,
+                "data": data or {},
+                "badge": 1
+            })
+
+        response = requests.post(
+            "https://exp.host/--/api/v2/push/send",
+            json=messages,
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip, deflate",
+                "Content-Type": "application/json",
+            },
+            timeout=8
+        )
+        print(f"Expo push notification sent to {len(push_tokens)} token(s). Status: {response.status_code}")
+    except Exception as err:
+        print("Error sending Expo push notification:", err)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@token_required
+def register_push_token(request):
+    emp_id = getattr(request, 'authenticated_employee_id', None) or request.data.get('employee_id')
+    push_token = request.data.get('push_token')
+    platform_name = request.data.get('platform', 'android')
+    device_name = request.data.get('device_name', '')
+
+    if not emp_id or not push_token:
+        return Response({"error": "employee_id and push_token are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        col = get_notifications_collection().database['employees_push_tokens']
+        now_dt = datetime.now()
+
+        col.update_one(
+            {"employee_id": str(emp_id), "push_token": push_token},
+            {"$set": {
+                "employee_id": str(emp_id),
+                "push_token": push_token,
+                "platform": platform_name,
+                "device_name": device_name,
+                "updated_at": now_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                "updated_at_ts": now_dt.timestamp()
+            }},
+            upsert=True
+        )
+        return Response({"success": True, "message": "Push token registered successfully"})
+    except Exception as e:
+        print("Error registering push token:", e)
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 @token_required
@@ -193,6 +282,7 @@ def send_admin_notification(request):
         if not emp_ids:
             return Response({"error": "No matching employees found for target selection"}, status=status.HTTP_404_NOT_FOUND)
 
+        is_popup = request.data.get('is_popup', False)
         documents = []
         for eid in set(emp_ids):
             documents.append({
@@ -201,6 +291,7 @@ def send_admin_notification(request):
                 "message": message,
                 "category": category,
                 "is_read": False,
+                "is_popup": bool(is_popup),
                 "action_url": "",
                 "created_at": now_str,
                 "created_at_ts": now_ts,
@@ -209,6 +300,12 @@ def send_admin_notification(request):
 
         if documents:
             col.insert_many(documents)
+
+        # Trigger real-time mobile push notifications
+        try:
+            send_expo_push_notification(emp_ids, title, message, {"category": category})
+        except Exception as push_err:
+            print("Failed to dispatch push notification", push_err)
 
         return Response({
             "success": True,
@@ -219,3 +316,45 @@ def send_admin_notification(request):
     except Exception as e:
         print("Error sending admin notification", e)
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+@token_required
+def get_active_popup_announcement(request):
+    """
+    Returns the latest unread Flash News / Emergency Announcement popup targeting this employee.
+    """
+    emp_id = getattr(request, 'authenticated_employee_id', None) or request.query_params.get('employee_id')
+
+    if not emp_id:
+        return Response({"error": "employee_id query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        col = get_notifications_collection()
+        emp_match = [str(emp_id)]
+        if str(emp_id).isdigit():
+            emp_match.append(int(emp_id))
+
+        doc = col.find_one(
+            {"employee_id": {"$in": emp_match}, "is_popup": True, "is_read": False},
+            sort=[("_id", -1)]
+        )
+
+        if not doc:
+            return Response({"active_popup": None})
+
+        return Response({
+            "active_popup": {
+                "id": str(doc.get('_id')),
+                "title": doc.get('title', ''),
+                "message": doc.get('message', ''),
+                "category": doc.get('category', 'announcement'),
+                "created_at": doc.get('created_at', ''),
+                "sent_by": doc.get('sent_by', 'Admin')
+            }
+        })
+    except Exception as e:
+        print("Error fetching active popup announcement", e)
+        return Response({"active_popup": None})
+

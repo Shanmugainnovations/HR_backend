@@ -9,6 +9,8 @@ from rest_framework.response import Response
 from django.db.models import Min, Max, F
 from django.db.models.expressions import RawSQL
 from ..models import EmployeeShiftSchedule, EmployeeAttendance, Shift
+from employees.decorators import token_required
+
 
 IST = pytz.timezone('Asia/Kolkata')
 # 🔥 Safe conversion function (IMPORTANT)
@@ -31,7 +33,9 @@ def to_ist(dt):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def roster_attendance_report(request):
+
     """
     Combines Shift Roster with Actual Punch timings and Total Hours.
     """

@@ -8,10 +8,13 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from pymongo import MongoClient
 from ..models import EmployeeShiftSchedule, Employee, Shift, Department
+from employees.decorators import token_required
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def export_roster_csv(request):
+
     from_date_str = request.query_params.get('from_date')
     to_date_str = request.query_params.get('to_date')
     month_str = request.query_params.get('month')

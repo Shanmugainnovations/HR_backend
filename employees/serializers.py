@@ -11,11 +11,13 @@ class ObjectIdField(serializers.Field):
     def to_internal_value(self, data):
         return ObjectId(data)
 
+AUDIT_FIELDS = ['created_by', 'created_date', 'lastmodified_by', 'lastmodified_date']
+
 class EmployeeSerializer(serializers.ModelSerializer):
     id = serializers.CharField(read_only=True)
     class Meta:
         model = Employee
-        fields = ['id', 'employee_id', 'current_face_encoding', 'face_encoding_data_history', 'is_active', 'created_by', 'created_date', 'lastmodified_by', 'lastmodified_date']
+        fields = ['id', 'employee_id', 'current_face_encoding', 'face_encoding_data_history', 'is_active'] + AUDIT_FIELDS
 
 class EmployeeCreateSerializer(serializers.ModelSerializer):
     # Accept image via base64 or multipart upload
@@ -47,7 +49,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Register
-        fields = ['name', 'role', 'password', 'confirmPassword', 'employee_id', 'department', 'device', 'fingerprint_id']
+        fields = ['id', 'name', 'role', 'password', 'confirmPassword', 'employee_id', 'department', 'device', 'fingerprint'] + AUDIT_FIELDS
         extra_kwargs = {'password': {'write_only': True}}
 
     def validate(self, data):
@@ -78,7 +80,7 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Department
-        fields = ['id', 'name', 'shifts', 'shift_ids']
+        fields = ['id', 'name', 'shifts', 'shift_ids'] + AUDIT_FIELDS
 
 class EmployeeShiftScheduleSerializer(serializers.ModelSerializer):
     employee_name = serializers.CharField(source='employee.name', read_only=True)
@@ -88,4 +90,4 @@ class EmployeeShiftScheduleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = EmployeeShiftSchedule
-        fields = ['id', 'employee', 'employee_name', 'shift', 'shift_name', 'start_time', 'end_time', 'date']
+        fields = ['id', 'employee', 'employee_name', 'shift', 'shift_name', 'start_time', 'end_time', 'date'] + AUDIT_FIELDS

@@ -11,7 +11,9 @@ from employees.decorators import token_required
 
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
+@token_required
 def leave_type_list_create(request):
+
     if request.method == 'GET':
         leave_types = LeaveType.objects.all().order_by('name')
         serializer = LeaveTypeSerializer(leave_types, many=True)
@@ -20,12 +22,17 @@ def leave_type_list_create(request):
     elif request.method == 'POST':
         serializer = LeaveTypeSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            from employees.models import extract_actor_id
+            actor_id = extract_actor_id(request)
+            lt = serializer.save(created_by=actor_id, lastmodified_by=actor_id)
+            print(f"🔑 AUDIT SAVED -> LeaveType CreatedBy: {lt.created_by}")
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
 @api_view(['GET', 'PUT', 'DELETE'])
 @permission_classes([AllowAny])
+@token_required
 def leave_type_detail(request, pk):
     try:
         leave_type = LeaveType.objects.get(pk=pk)
@@ -39,8 +46,11 @@ def leave_type_detail(request, pk):
     elif request.method == 'PUT':
         serializer = LeaveTypeSerializer(leave_type, data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            lt = serializer.save()
+            lt.save_with_audit(request)
             return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     elif request.method == 'DELETE':

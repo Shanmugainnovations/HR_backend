@@ -11,8 +11,12 @@ from .views.mobile_app.notifications import (
     mark_notifications_read,
     clear_notifications,
     get_unread_count,
-    send_admin_notification
+    send_admin_notification,
+    register_push_token,
+    get_active_popup_announcement
 )
+
+
 
 
 
@@ -92,6 +96,10 @@ urlpatterns = [
     path('employee/notifications/clear/', clear_notifications, name='clear-notifications'),
     path('employee/notifications/unread-count/', get_unread_count, name='get-unread-count'),
     path('admin/send-notification/', send_admin_notification, name='admin-send-notification'),
+    path('register-push-token/', register_push_token, name='register-push-token'),
+    path('employee/notifications/active-popup/', get_active_popup_announcement, name='active-popup-announcement'),
+
+
 
 
 
