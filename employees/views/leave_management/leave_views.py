@@ -32,16 +32,19 @@ def leave_type_list_create(request):
 @permission_classes([AllowAny])
 def leave_type_detail(request, pk):
     try:
-        leave_type = LeaveType.objects.get(pk=pk)
+        try:
+            leave_type = LeaveType.objects.get(pk=int(pk))
+        except (ValueError, TypeError):
+            leave_type = LeaveType.objects.get(pk=pk)
     except LeaveType.DoesNotExist:
-        return Response(status=status.HTTP_404_NOT_FOUND)
+        return Response({'error': 'Leave type not found'}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'GET':
         serializer = LeaveTypeSerializer(leave_type)
         return Response(serializer.data)
 
     elif request.method == 'PUT':
-        serializer = LeaveTypeSerializer(leave_type, data=request.data)
+        serializer = LeaveTypeSerializer(leave_type, data=request.data, partial=True)
         if serializer.is_valid():
             lt = serializer.save()
             lt.save_with_audit(request)
