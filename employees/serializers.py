@@ -37,6 +37,61 @@ class AttendanceSerializer(serializers.ModelSerializer):
         model = EmployeeAttendance
         fields = '__all__'
 
+import ast
+from .models import Profile, GridFSFile
+
+class ProfileSerializer(serializers.ModelSerializer):
+    qualifications = serializers.SerializerMethodField()
+    experiences = serializers.SerializerMethodField()
+    familyDetails = serializers.SerializerMethodField()
+    kycDetails = serializers.SerializerMethodField()
+    salaryDetails = serializers.SerializerMethodField()
+    fnfStatus = serializers.SerializerMethodField()
+    bankDetails = serializers.SerializerMethodField()
+    signature = serializers.CharField(required=False, allow_null=True)
+
+    class Meta:
+        model = Profile
+        fields = '__all__'
+
+    def parse_field(self, field):
+        if isinstance(field, str):
+            try:
+                return ast.literal_eval(field)
+            except Exception:
+                return field
+        return field
+
+    def _get_field_value(self, obj, field_name):
+        return self.parse_field(getattr(obj, field_name))
+
+    def get_qualifications(self, obj):
+        return self._get_field_value(obj, 'qualifications')
+
+    def get_experiences(self, obj):
+        return self._get_field_value(obj, 'experiences')
+
+    def get_familyDetails(self, obj):
+        return self._get_field_value(obj, 'familyDetails')
+
+    def get_kycDetails(self, obj):
+        return self._get_field_value(obj, 'kycDetails')
+
+    def get_salaryDetails(self, obj):
+        return self._get_field_value(obj, 'salaryDetails')
+
+    def get_fnfStatus(self, obj):
+        return self._get_field_value(obj, 'fnfStatus')
+
+    def get_bankDetails(self, obj):
+        return self._get_field_value(obj, 'bankDetails')
+
+class GridFSFileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GridFSFile
+        fields = '__all__'
+
+
 
 class EmployeeStatusSerializer(serializers.ModelSerializer):
     class Meta:
@@ -49,7 +104,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Register
-        fields = ['id', 'name', 'role', 'password', 'confirmPassword', 'employee_id', 'department', 'device', 'fingerprint'] + AUDIT_FIELDS
+        fields = ['id', 'name', 'role', 'password', 'confirmPassword', 'employee_id', 'department', 'assigned_departments', 'device', 'fingerprint'] + AUDIT_FIELDS
         extra_kwargs = {'password': {'write_only': True}}
 
     def validate(self, data):
@@ -73,7 +128,7 @@ class LeaveTypeSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class DepartmentSerializer(serializers.ModelSerializer):
-    shifts = ShiftSerializer(many=True, read_only=True)
+    shifts = serializers.SerializerMethodField()
     shift_ids = serializers.PrimaryKeyRelatedField(
         queryset=Shift.objects.all(), source='shifts', many=True, write_only=True, required=False
     )
@@ -81,6 +136,14 @@ class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
         fields = ['id', 'name', 'shifts', 'shift_ids'] + AUDIT_FIELDS
+
+    def get_shifts(self, obj):
+        try:
+            if hasattr(obj, 'id') and obj.id:
+                return ShiftSerializer(obj.shifts.all(), many=True).data
+        except Exception:
+            pass
+        return []
 
 class EmployeeShiftScheduleSerializer(serializers.ModelSerializer):
     employee_name = serializers.CharField(source='employee.name', read_only=True)

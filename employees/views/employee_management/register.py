@@ -2,7 +2,7 @@
 Employee Profile Registration Package
 Handles employee profile creation, biometric face enrollment, and detail lookup.
 """
-from employees.views.employee import (
+from employees.views.employee_management.employee import (
     register_employee,
     register_face,
     get_all_employees,

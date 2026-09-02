@@ -68,7 +68,9 @@ ROOT_URLCONF = 'hr_backend.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [
+            os.path.join(BASE_DIR, 'employees', 'templates'),
+        ],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -80,6 +82,7 @@ TEMPLATES = [
         },
     },
 ]
+
 
 WSGI_APPLICATION = 'hr_backend.wsgi.application'
 
@@ -100,13 +103,14 @@ import os
 DATABASES = {
     'default': {
         'ENGINE': 'djongo',
-        'NAME': os.environ.get('HR_DB_NAME', 'HR'),
+        'NAME': os.environ.get('GLOBAL_DB_NAME', os.environ.get('HR_DB_NAME', 'Global')),
         'ENFORCE_SCHEMA': False,
         'CLIENT': {
             'host': os.environ.get('GLOBAL_DB_HOST'),
         }
     }
 }
+
 
 
 
@@ -155,9 +159,20 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 CORS_ALLOW_HEADERS = [
+    'authorization',
     'Authorization',
+    'token',
+    'Token',
     'content-type',
+    'accept',
+    'origin',
+    'x-requested-with',
     'x-user-role',
     'x-device-id',
-    "x-employee-id"  
+    'x-employee-id',
+    'branch-code',
+    'Branch-Code',
+    'auth-user-id',
+    'auth-branch-code',
 ]
+

@@ -1,3 +1,4 @@
+from employees.permissions import HasRoleAndDataPermission
 from datetime import date, datetime, timedelta
 import calendar
 import os
@@ -8,9 +9,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from django.db.models import Min, Max, F
 from django.db.models.expressions import RawSQL
-from ..models import EmployeeShiftSchedule, EmployeeAttendance, Shift
-from employees.decorators import token_required
-
+from employees.models import EmployeeShiftSchedule, EmployeeAttendance, Shift
 
 IST = pytz.timezone('Asia/Kolkata')
 # 🔥 Safe conversion function (IMPORTANT)
@@ -33,7 +32,6 @@ def to_ist(dt):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
-@token_required
 def roster_attendance_report(request):
 
     """
@@ -47,25 +45,13 @@ def roster_attendance_report(request):
     if not month_str and not (from_date_str and to_date_str):
         return Response({"error": "Month parameter (YYYY-MM) or From-To dates are required"}, status=400)
 
-    # Resolve Department Filter (handle numeric IDs from frontend)
-    all_names = []
-    codes = []
-    raw_ids = []
-    
-    from ..models import Department
+    from employees.views.common.utils import resolve_department_filter
+    dept_ctx = resolve_department_filter(department_filter)
+
+    from employees.models import Department
     sql_depts = list(Department.objects.all())
     sql_dept_map = {d.id: d.name for d in sql_depts}
     name_to_sql_id = {d.name: d.id for d in sql_depts}
-
-    if department_filter and department_filter != 'All':
-        raw_ids = [d.strip() for d in department_filter.split(',')]
-        for rid in raw_ids:
-            if rid.isdigit():
-                d_id = int(rid)
-                if d_id in sql_dept_map:
-                    all_names.append(sql_dept_map[d_id])
-            else:
-                all_names.append(rid)
 
     # 1. Fetch Employees and Department Info from Mongo (Global DB)
     try:
@@ -74,41 +60,12 @@ def roster_attendance_report(request):
         client = MongoClient(mongo_uri)
         db = client[db_name]
 
+        from employees.views.common.utils import get_cached_reference_maps
+        dept_map, desig_map, all_shifts = get_cached_reference_maps()
         profiles_col = db['backend_diagnostics_profile']
-        departments_col = db['backend_diagnostics_Departments']
-        designations_col = db['backend_diagnostics_Designation']
-        
-        # Create lookup maps
-        dept_map = {
-            d.get('department_code'): d.get('department_name')
-            for d in departments_col.find() # Removed is_active=True to be safe
-        }
-        
-        # Resolve names to codes
-        if all_names:
-            resolved_codes = list(departments_col.find(
-                {"department_name": {"$in": all_names}},
-                {"department_code": 1}
-            ))
-            codes = [c.get("department_code") for c in resolved_codes]
-
-        search_values = all_names + codes + raw_ids
-
-        desig_map = {
-            d.get('Designation_code'): d.get('designation')
-            for d in designations_col.find({'is_active': True})
-        }
 
         # Fetch profiles based on department filter
-        query = {}
-        if search_values:
-            query = {
-                "$or": [
-                    {"department": {"$in": search_values}},
-                    {"department_id": {"$in": search_values}},
-                    {"department_name": {"$in": search_values}}
-                ]
-            }
+        query = dept_ctx['mongo_query']
         
         # Fetch all employees from SQL
         from employees.models import Employee
@@ -140,7 +97,7 @@ def roster_attendance_report(request):
             
         # Fallback: Add employees that are in SQL but not in Global DB
         # Only add them if there is no department filter, or if "Unassigned" is explicitly requested.
-        if not search_values or "Unassigned" in search_values:
+        if not dept_ctx['is_filtered'] or "Unassigned" in dept_ctx['target_terms']:
             for emp in active_employees:
                 emp_id_str = str(emp.employee_id)
                 if emp_id_str not in employees_data:
@@ -182,30 +139,36 @@ def roster_attendance_report(request):
         report_dates.append(curr)
         curr += timedelta(days=1)
 
-    # 3. Fetch Shift Schedules (avoiding select_related to prevent Djongo BSON limits with huge IN queries)
-    from employees.models import Shift
-    all_shifts = {s.id: s for s in Shift.objects.all()}
+    # 3. Fast Direct Query for Shift Schedules
+    start_dt_sch = datetime.combine(start_date, datetime.min.time())
+    end_dt_sch = datetime.combine(end_date, datetime.max.time())
     
-    schedules = EmployeeShiftSchedule.objects.filter(
-        date__gte=start_date, 
-        date__lte=end_date,
-        employee_id__in=employees_data.keys()
-    )
-
+    sch_query = {
+        'date': {'$gte': start_dt_sch, '$lte': end_dt_sch},
+        'employee_id': {'$in': list(employees_data.keys())}
+    }
+    schedules_raw = list(db['employees_employeeshiftschedule'].find(
+        sch_query, 
+        {'_id': 0, 'employee_id': 1, 'shift_id': 1, 'date': 1}
+    ))
+    
     schedule_map = {} # {(emp_id, date): shift_obj}
-    for sch in schedules:
-        schedule_map[(sch.employee_id, sch.date)] = all_shifts.get(sch.shift_id)
+    for sch in schedules_raw:
+        sch_date = sch['date'].date() if isinstance(sch.get('date'), datetime) else sch.get('date')
+        schedule_map[(str(sch['employee_id']), sch_date)] = all_shifts.get(sch.get('shift_id'))
 
-    # 4. Fetch Attendance (Grouped by Date & Employee)
-    # Fetch from previous day and until next day to correctly pair night shifts
+    # 4. Fast Direct Query for Attendance (Grouped by Date & Employee)
     start_dt = datetime.combine(start_date - timedelta(days=1), datetime.min.time())
     end_dt = datetime.combine(end_date + timedelta(days=1), datetime.max.time())
     
-    # Using 'attendence_time' and 'employee_id' as per model
-    attendance_records = EmployeeAttendance.objects.filter(
-        attendence_time__range=(start_dt, end_dt),
-        employee_id__in=employees_data.keys()
-    ).order_by('employee_id', 'attendence_time')
+    att_query = {
+        'attendence_time': {'$gte': start_dt, '$lte': end_dt},
+        'employee_id': {'$in': list(employees_data.keys())}
+    }
+    attendance_records = list(db['employees_employeeattendance'].find(
+        att_query,
+        {'_id': 0, 'employee_id': 1, 'attendence_time': 1, 'attendence_type': 1}
+    ).sort([('employee_id', 1), ('attendence_time', 1)]))
 
     # Process attendance: map (emp_id, date) -> list of punches
     attendance_map = {}
@@ -217,15 +180,21 @@ def roster_attendance_report(request):
     noon_time = time(12, 0)
 
     for att in attendance_records:
-        ist_time = to_ist(att.attendence_time)
+        att_time = att.get('attendence_time')
+        if not att_time:
+            continue
+        ist_time = to_ist(att_time)
+        if not ist_time:
+            continue
         punch_date = ist_time.date()
         
-        if current_emp_id != att.employee_id:
-            current_emp_id = att.employee_id
+        eid = str(att.get('employee_id', ''))
+        if current_emp_id != eid:
+            current_emp_id = eid
             current_shift_date = None
             last_in_time = None
             
-        punch_type = att.attendence_type
+        punch_type = att.get('attendence_type')
         assigned_date = punch_date
         
         if punch_type == 'IN':
@@ -248,7 +217,7 @@ def roster_attendance_report(request):
 
         # Only add to map if assigned_date is within our requested report_dates bounds (to avoid showing extra days)
         # But wait, the loop iterating over report_dates will only pull what it needs. So we can just add it.
-        key = (att.employee_id, assigned_date)
+        key = (eid, assigned_date)
         if key not in attendance_map:
             attendance_map[key] = []
         

@@ -16,6 +16,11 @@ from .notifications import (
     get_unread_count,
     send_admin_notification
 )
+from .profile import (
+    get_full_employee_profile,
+    serve_employee_profile_photo,
+    change_employee_password
+)
 
 __all__ = [
     'today_status',
@@ -31,7 +36,10 @@ __all__ = [
     'mark_notifications_read',
     'clear_notifications',
     'get_unread_count',
-    'send_admin_notification'
+    'send_admin_notification',
+    'get_full_employee_profile',
+    'serve_employee_profile_photo',
+    'change_employee_password'
 ]
 
 

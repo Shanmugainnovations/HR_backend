@@ -17,7 +17,7 @@ import base64
 from employees.face_utils import base64_to_encoding, compare_encodings, imagefile_to_encoding, SpoofingDetectedError, match_face_1_to_n
 from pyauth.auth import HasRolePermission
 
-from .utils import to_list, get_mongo_client
+from employees.views.common.utils import to_list, get_mongo_client
 
 # --- 🚀 Performance Cache ---
 # Global cache to store employee encodings in memory for faster matching
@@ -191,6 +191,7 @@ def _get_registered_image(image_md5):
 
 
 @api_view(['POST'])
+@permission_classes([AllowAny])
 def verify_face(request):
     """
     Fast verification endpoint for the first frame in a dual-image sequence.
@@ -240,6 +241,7 @@ def verify_face(request):
 
 
 @api_view(['POST'])
+@permission_classes([AllowAny])
 def mark_attendance(request):
     image1_b64 = request.data.get('image')
     image1_file = request.FILES.get('image')
@@ -284,7 +286,7 @@ def mark_attendance(request):
         
         # Log the mismatch
         try:
-            from .models import FaceMismatchLog
+            from employees.models import FaceMismatchLog
             FaceMismatchLog.objects.create(
                 verified_employee_id=verified_employee_id,
                 mark_employee_id=meta1['employee_id'],
@@ -356,81 +358,45 @@ def attendance_report_with_employee_details(request):
             from_date = datetime.strptime(from_date, "%Y-%m-%d")
             to_date = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
 
-        # ---- Fetch Attendance Records ----
-        # Fetch from previous day to correctly pair night shifts
-        from_date_ext = from_date - timedelta(days=1)
-        records = EmployeeAttendance.objects.filter(
-            attendence_time__gte=from_date_ext,
-            attendence_time__lt=to_date
-        ).order_by('employee_id', 'attendence_time')
-
-        if not records.exists():
-            return Response([], status=200)
-
         # ---- Mongo Connection ----
         db_name = os.environ.get("GLOBAL_DB_NAME", "Global")
         client = get_mongo_client()
         db = client[db_name]
 
         profiles = db['backend_diagnostics_profile']
-        departments = db['backend_diagnostics_Departments']
-        designations = db['backend_diagnostics_Designation']
+
+        # ---- Fetch Attendance Records (Fast Direct Mongo Query) ----
+        # Fetch from previous day to correctly pair night shifts
+        from_date_ext = from_date - timedelta(days=1)
+        records = list(db['employees_employeeattendance'].find(
+            {'attendence_time': {'$gte': from_date_ext, '$lt': to_date}},
+            {'_id': 0, 'attendence_id': 1, 'employee_id': 1, 'attendence_time': 1, 'attendence_type': 1, 'device_id': 1}
+        ).sort([('employee_id', 1), ('attendence_time', 1)]))
+
+        if not records:
+            return Response([], status=200)
 
         # ---- SQL Department Map ----
         from employees.models import Department
         sql_dept_map = {d.name: d.id for d in Department.objects.all()}
 
-        # ---- Create Lookup Maps ----
-        dept_map = {
-            d.get('department_code'): d.get('department_name')
-            for d in departments.find()
-        }
-        desig_map = {
-            d.get('Designation_code'): d.get('designation')
-            for d in designations.find({'is_active': True})
-        }
+        # ---- Cached Lookup Maps (Fast in-memory) ----
+        from employees.views.common.utils import get_cached_reference_maps
+        dept_map, desig_map, _ = get_cached_reference_maps()
 
         # ---- Department Filtering Resolution ----
         department_filter = request.GET.get('department')
-        search_values = []
-        if department_filter and department_filter != 'All':
-            raw_ids = [d.strip() for d in department_filter.split(',')]
-            
-            # Resolve SQL IDs to names
-            from employees.models import Department as SQLDepartment
-            resolved_sql_names = list(SQLDepartment.objects.filter(id__in=[rid for rid in raw_ids if rid.isdigit()]).values_list('name', flat=True))
-            
-            query_names = raw_ids + resolved_sql_names
-            
-            # Find Mongo codes for these names/codes
-            dept_cursor = departments.find({
-                "$or": [
-                    {"department_name": {"$in": query_names}},
-                    {"department_code": {"$in": query_names}}
-                ]
-            })
-            mongo_codes = [d.get("department_code") for d in dept_cursor]
-            
-            search_values = list(set(raw_ids + query_names + mongo_codes))
+        from employees.views.common.utils import resolve_department_filter
+        dept_ctx = resolve_department_filter(department_filter)
+        profile_query = dept_ctx['mongo_query']
 
         # ---- Fetch Employee Lookup ----
         employee_map = {}
         # Fetch only employees with face registered from SQL
         face_registered_ids = set(Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True))
-        
-        # Profile Query
-        profile_query = {}
-        if search_values:
-            profile_query = {
-                "$or": [
-                    {"department": {"$in": search_values}},
-                    {"department_id": {"$in": search_values}},
-                    {"department_name": {"$in": search_values}}
-                ]
-            }
 
-        # Fetch matching profiles from Mongo
-        all_profiles = list(profiles.find(profile_query))
+        # Fetch matching profiles from Mongo with projection
+        all_profiles = list(profiles.find(profile_query, {'_id': 0, 'employeeId': 1, 'employeeName': 1, 'department': 1, 'designation': 1}))
         for emp in all_profiles:
             emp_id = str(emp.get("employeeId"))
             if emp_id not in face_registered_ids:
@@ -446,7 +412,7 @@ def attendance_report_with_employee_details(request):
             }
             
         # Fallback for SQL registered employees missing from Global DB
-        if not search_values or "Unassigned" in search_values:
+        if not dept_ctx['is_filtered'] or "Unassigned" in dept_ctx['target_terms']:
             registered_sql_emps = Employee.objects.filter(current_face_encoding__isnull=False)
             for sql_emp in registered_sql_emps:
                 emp_id_str = str(sql_emp.employee_id)
@@ -460,7 +426,6 @@ def attendance_report_with_employee_details(request):
 
         # ---- Prepare Result ----
         result = []
-        # (Filtering now handled during population of employee_map above)
 
         # Date range for iteration (to_date was already +1 day)
         report_dates = []
@@ -480,16 +445,21 @@ def attendance_report_with_employee_details(request):
         noon_time = time(12, 0)
         
         for r in records:
-            # Convert to IST
-            ist_time = r.attendence_time.astimezone(IST)
+            raw_time = r.get('attendence_time')
+            if not raw_time:
+                continue
+            ist_time = raw_time.astimezone(IST) if hasattr(raw_time, 'astimezone') else to_ist(raw_time)
+            if not ist_time:
+                continue
             punch_date = ist_time.date()
             
-            if current_emp_id != str(r.employee_id):
-                current_emp_id = str(r.employee_id)
+            r_eid = str(r.get('employee_id', ''))
+            if current_emp_id != r_eid:
+                current_emp_id = r_eid
                 current_shift_date = None
                 last_in_time = None
                 
-            punch_type = r.attendence_type
+            punch_type = r.get('attendence_type')
             assigned_date = punch_date
             
             if punch_type == 'IN':
@@ -507,12 +477,17 @@ def attendance_report_with_employee_details(request):
                     if ist_time.time() < noon_time:
                         assigned_date = punch_date - timedelta(days=1)
             
-            key = (str(r.employee_id), assigned_date)
+            key = (r_eid, assigned_date)
             if key not in records_by_emp_day:
                 records_by_emp_day[key] = []
             
-            r.attendence_time = ist_time  # Use IST for display/export
-            records_by_emp_day[key].append(r)
+            records_by_emp_day[key].append({
+                'attendence_id': r.get('attendence_id'),
+                'attendence_time': ist_time,
+                'attendence_type': punch_type,
+                'device_id': r.get('device_id'),
+                'employee_id': r_eid
+            })
 
         # Iterate over ALL employees and ALL dates
         # Sorting by name for consistency
@@ -534,10 +509,10 @@ def attendance_report_with_employee_details(request):
                             "department": emp_info.get("department", "N/A"),
                             "department_id": emp_info.get("department_id"),
                             "designation": emp_info.get("designation", "N/A"),
-                            "device_id": r.device_id,
-                            "attendence_type": r.attendence_type,
-                            "attendence_time": r.attendence_time,
-                            "confidence": r.confidence,
+                            "device_id": r.get("device_id") if isinstance(r, dict) else getattr(r, 'device_id', 'N/A'),
+                            "attendence_type": r.get("attendence_type") if isinstance(r, dict) else getattr(r, 'attendence_type', ''),
+                            "attendence_time": r.get("attendence_time") if isinstance(r, dict) else getattr(r, 'attendence_time', None),
+                            "confidence": r.get("confidence", 100) if isinstance(r, dict) else getattr(r, 'confidence', 100),
                         })
                 else:
                     # No records for this employee on this day -> Add placeholder
@@ -747,49 +722,21 @@ def get_spoofing_attempts(request):
     department = request.GET.get('department')
     if department and department != 'All':
         try:
-            db_name = os.environ.get("GLOBAL_DB_NAME", "Global")
-            client = get_mongo_client()
-            db = client[db_name]
-
-            raw_values = [d.strip() for d in department.split(',')]
-            
-            # Resolve numeric IDs to names
-            from employees.models import Department
-            numeric_ids = [rv for rv in raw_values if rv.isdigit()]
-            resolved_names = list(Department.objects.filter(id__in=numeric_ids).values_list('name', flat=True))
-            
-            dept_query_values = raw_values + resolved_names
-            
-            # Resolve department codes from names OR treat them as codes directly
-            dept_cursor = db['backend_diagnostics_Departments'].find({
-                "$or": [
-                    {"department_name": {"$in": dept_query_values}},
-                    {"department_code": {"$in": dept_query_values}}
-                ]
-            })
-            dept_codes = [d.get("department_code") for d in dept_cursor]
-            
-            # If nothing found in mongo, fallback to raw values (might be codes already)
-            if not dept_codes:
-                dept_codes = dept_query_values
-
-            query = {"department": {"$in": dept_codes}}
-            dept_profiles = list(db['backend_diagnostics_profile'].find(query, {"employeeId": 1}))
-            dept_emp_ids = [str(p["employeeId"]) for p in dept_profiles]
-
+            from employees.views.common.utils import resolve_department_filter
+            dept_ctx = resolve_department_filter(department)
+            dept_emp_ids = dept_ctx['matching_employee_ids'] or set()
             queryset = queryset.filter(employee_id__in=dept_emp_ids)
-
         except Exception as e:
             print(f"Error filtering spoofing reports by department: {e}")
 
-    attempts = queryset.order_by('-timestamp')
+    attempts = list(queryset.order_by('-timestamp')[:200])
     data = []
     for attempt in attempts:
         data.append({
             "id": attempt.id,
             "employee_id": attempt.employee_id,
             "device_id": attempt.device_id,
-            "timestamp": attempt.timestamp.astimezone(IST),
+            "timestamp": attempt.timestamp.astimezone(IST) if attempt.timestamp else None,
             "image": attempt.image # Base64 string
         })
     return Response(data, status=200)

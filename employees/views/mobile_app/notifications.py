@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework import status
 import os
 from datetime import datetime
-from ..utils import get_mongo_client
+from employees.views.common.utils import get_mongo_client
 
 from employees.decorators import token_required
 
@@ -13,6 +13,27 @@ def get_notifications_collection():
     db_name = os.environ.get("HR_DB_NAME", "HR")
     db = client[db_name]
     return db['employees_notification']
+
+
+def create_in_app_notification(employee_id, title, message, category='general', action_url=''):
+    """Helper to insert an in-app notification for a given employee"""
+    try:
+        col = get_notifications_collection()
+        now_dt = datetime.now()
+        doc = {
+            "employee_id": str(employee_id),
+            "title": title,
+            "message": message,
+            "category": category,
+            "is_read": False,
+            "action_url": action_url,
+            "created_at": now_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            "created_at_ts": now_dt.timestamp()
+        }
+        return col.insert_one(doc)
+    except Exception as e:
+        print("Error creating in-app notification:", e)
+        return None
 
 
 def send_expo_push_notification(employee_ids, title, body, data=None):

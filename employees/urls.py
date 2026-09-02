@@ -1,11 +1,12 @@
 from django.urls import path
 from . import views
-from .views import reports
-from .views.shifts import (
+from .views.analytics_and_reports import reports
+from .views.attendance_management.shifts import (
     shift_list_create, shift_detail,
     department_list_create, department_detail,
     get_monthly_roster, assign_shift
 )
+
 from .views.mobile_app.notifications import (
     get_employee_notifications,
     mark_notifications_read,
@@ -30,8 +31,8 @@ urlpatterns = [
     path('employees/<str:employee_id>/', views.get_employee_detail, name='employee-detail'),
     path('register-device/', views.register_device_api, name='register-device'),
     path('employees_from_global/', views.get_all_employee_from_global, name='global-employees'),
-    path('global-departments/', views.get_global_departments, name='global-departments'),
     path('login/', views.login, name='login'),
+    path('user-profile/<str:employee_id>/', views.get_user_profile, name='user-profile'),
 
     path("employees/<str:employee_id>/encode_face/", views.encode_employee_face),
     path('employees/<str:employee_id>/enable_face/', views.enable_facial_recognition),
@@ -98,11 +99,52 @@ urlpatterns = [
     path('admin/send-notification/', send_admin_notification, name='admin-send-notification'),
     path('register-push-token/', register_push_token, name='register-push-token'),
     path('employee/notifications/active-popup/', get_active_popup_announcement, name='active-popup-announcement'),
+    path('set-employee-password/', views.set_employee_password, name='set-employee-password'),
+    path('data-entitlements/', views.get_data_entitlements, name='data-entitlements'),
+    path('get_data_departments/', views.get_data_departments, name='get-data-departments'),
+    path('get_data_designation/', views.get_data_designation, name='get-data-designation'),
+    path('getprimaryandadditionalrole/', views.getprimaryandadditionalrole, name='getprimaryandadditionalrole'),
+    path('get_next_department_code/', views.get_next_department_code, name='get-next-department-code'),
+    path('get_next_designation_code/', views.get_next_designation_code, name='get-next-designation-code'),
+    path('addnew_department/', views.addnew_department, name='addnew-department'),
+    path('addnew_designation/', views.addnew_designation, name='addnew-designation'),
+    path('employees_birthdays_today/', views.get_todays_birthdays, name='employees-birthdays-today'),
+    path('check_employee_id/', views.check_employee_id, name='check-employee-id'),
+    path('create_employee/', views.create_employee, name='create-employee'),
 
+    path('update_employee/<str:employee_id>/', views.update_employee, name='update-employee'),
+    path('get_employee_by_id/<str:employee_id>/', views.get_employee_by_id, name='get-employee-by-id'),
+    path('get_employees_with_labels/', views.get_employees_with_labels, name='get-employees-with-labels'),
+    path('upload-gridfs/', views.upload_file, name='upload-gridfs'),
+    path('gridfs/<str:file_id>/', views.serve_file, name='serve-gridfs-file'),
 
+    # HR Helpdesk & Support Tickets
+    path('helpdesk/categories/', views.get_helpdesk_categories, name='helpdesk-categories'),
+    path('helpdesk/tickets/', views.get_helpdesk_tickets, name='helpdesk-tickets'),
+    path('helpdesk/tickets/create/', views.create_helpdesk_ticket, name='helpdesk-tickets-create'),
+    path('helpdesk/tickets/<str:ticket_id>/update/', views.update_helpdesk_ticket, name='helpdesk-tickets-update'),
 
+    # Mobile Full Profile, Photo & Change Password
+    path('employee/full-profile/', views.get_full_employee_profile, name='employee-full-profile'),
+    path('employee-profile-photo/<str:employee_id>/', views.serve_employee_profile_photo, name='employee-profile-photo'),
+    path('change-password/', views.change_employee_password, name='change-employee-password'),
 
+    # Mobile Self-Activation / Account Setup
+    path('mobile-employee-check/', views.mobile_employee_check, name='mobile-employee-check'),
+    path('mobile-create-login/', views.mobile_create_login, name='mobile-create-login'),
 
+    # Payroll & Salary Management
+    path('payroll/monthly/', views.monthly_payroll_view, name='monthly-payroll'),
+    path('payroll/update-entry/', views.update_payroll_entry, name='update-payroll-entry'),
+    path('payroll/approve/', views.approve_monthly_payroll, name='approve-monthly-payroll'),
+    path('payroll/export-bank-sheet/', views.export_bank_transfer_sheet, name='export-bank-sheet'),
+    path('payroll/export-pf-ecr/', views.export_pf_ecr, name='export-pf-ecr'),
+    path('payroll/export-esi-return/', views.export_esi_return, name='export-esi-return'),
+    path('payroll/payslip-pdf/<str:employee_id>/', views.download_payslip_html, name='download-payslip-html'),
+    path('payroll/employee-payslips/<str:employee_id>/', views.employee_payslip_history, name='employee-payslip-history'),
 ]
+
+
+
 
 

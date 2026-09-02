@@ -1,3 +1,4 @@
+from employees.permissions import HasRoleAndDataPermission
 import base64
 from datetime import datetime
 import pytz
@@ -13,7 +14,7 @@ from employees.face_utils import (
     SpoofingDetectedError,
     match_face_1_to_n
 )
-from employees.views.attendance import get_optimized_encodings
+from employees.views.attendance_management.attendance import get_optimized_encodings
 
 from employees.decorators import token_required
 
@@ -206,7 +207,6 @@ def issue_canteen_token(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
-@token_required
 def get_canteen_today_summary(request):
     try:
         today = timezone.now().astimezone(IST).date()
@@ -218,12 +218,17 @@ def get_canteen_today_summary(request):
         total_issued = tokens.count()
         total_redeemed = tokens.filter(status='REDEEMED').count()
         total_pending = tokens.filter(status='ISSUED').count()
+        unique_employees = len(set(tokens.values_list('employee_id', flat=True)))
 
         return Response({
             'status': 'success',
             'date': today.strftime('%Y-%m-%d'),
+            'total_tokens_today': total_issued,
+            'unique_employees_today': unique_employees,
             'summary': {
                 'total_issued': total_issued,
+                'total_tokens_today': total_issued,
+                'unique_employees_today': unique_employees,
                 'total_redeemed': total_redeemed,
                 'total_pending': total_pending
             }
@@ -235,16 +240,27 @@ def get_canteen_today_summary(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
-@token_required
 def get_canteen_token_history(request):
     try:
         employee_id = request.query_params.get('employee_id')
+        search_query = request.query_params.get('search')
         date_str = request.query_params.get('date')
 
         queryset = CanteenTokenIssue.objects.all().order_by('-issued_at')
 
+        # Filter by specific employee_id
         if employee_id:
-            queryset = queryset.filter(employee_id=employee_id)
+            queryset = queryset.filter(employee_id=str(employee_id).strip())
+
+        # Filter by generic search query (employee_id, employee_name, department, or token_number)
+        if search_query:
+            q = str(search_query).strip()
+            queryset = queryset.filter(
+                models.Q(employee_id__icontains=q) |
+                models.Q(employee_name__icontains=q) |
+                models.Q(department__icontains=q) |
+                models.Q(token_number__icontains=q)
+            )
 
         if date_str:
             target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
@@ -253,7 +269,7 @@ def get_canteen_token_history(request):
             queryset = queryset.filter(issued_at__range=(t_start, t_end))
 
         tokens_data = []
-        for t in queryset[:200]:
+        for t in queryset[:500]:
             tokens_data.append({
                 'id': t.id,
                 'token_number': t.token_number,
@@ -279,7 +295,6 @@ def get_canteen_token_history(request):
 
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
-@token_required
 def manage_canteen_rules(request):
     """
     GET or update canteen token quota rules.
@@ -290,15 +305,15 @@ def manage_canteen_rules(request):
         max_quota = request.data.get('max_daily_quota')
         if max_quota is not None:
             rule.max_daily_quota = int(max_quota)
-            rule.save_with_audit(request)
+            rule.save()
             return Response({
                 'status': 'success',
-                'message': 'Canteen rules updated successfully!',
+                'message': 'Canteen quota rule updated',
                 'max_daily_quota': rule.max_daily_quota
             }, status=200)
 
     return Response({
         'status': 'success',
         'max_daily_quota': rule.max_daily_quota,
-        'is_active': rule.is_active
+        'item_name': 'Tea'
     }, status=200)

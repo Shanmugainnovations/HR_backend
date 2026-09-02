@@ -1,3 +1,4 @@
+from employees.permissions import HasRoleAndDataPermission
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -7,11 +8,8 @@ from employees.serializers import LeaveTypeSerializer
 from django.utils import timezone
 from datetime import datetime, timedelta
 
-from employees.decorators import token_required
-
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
-@token_required
 def leave_type_list_create(request):
 
     if request.method == 'GET':
@@ -32,7 +30,6 @@ def leave_type_list_create(request):
 
 @api_view(['GET', 'PUT', 'DELETE'])
 @permission_classes([AllowAny])
-@token_required
 def leave_type_detail(request, pk):
     try:
         leave_type = LeaveType.objects.get(pk=pk)
@@ -51,15 +48,12 @@ def leave_type_detail(request, pk):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
     elif request.method == 'DELETE':
         leave_type.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
-@token_required
 def apply_leave(request):
     try:
         employee_id = getattr(request, 'authenticated_employee_id', None) or request.data.get('employee_id')
@@ -82,7 +76,6 @@ def apply_leave(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
-@token_required
 def my_leaves(request):
     try:
         employee_id = getattr(request, 'authenticated_employee_id', None) or request.GET.get('employee_id')
@@ -108,7 +101,6 @@ def my_leaves(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
-@token_required
 def pending_leaves(request):
     try:
         department_id = request.GET.get('department_id')
@@ -116,8 +108,19 @@ def pending_leaves(request):
         
         leaves = LeaveRequest.objects.all().order_by('-applied_on')
         
-        if department:
-            leaves = leaves.filter(department=department)
+        if department and department != 'All':
+            from django.db.models import Q
+            from employees.views.common.utils import resolve_department_filter
+            dept_ctx = resolve_department_filter(department)
+            target_terms = dept_ctx['target_terms']
+            matching_emp_ids = dept_ctx['matching_employee_ids'] or set()
+            
+            q_dept = Q()
+            if matching_emp_ids:
+                q_dept |= Q(employee_id__in=matching_emp_ids)
+            for t in target_terms:
+                q_dept |= Q(department__icontains=t) | Q(department_id__icontains=t)
+            leaves = leaves.filter(q_dept)
         elif department_id:
             leaves = leaves.filter(department_id=department_id)
             
@@ -141,7 +144,6 @@ def pending_leaves(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
-@token_required
 def leave_history(request):
     try:
         status_filter = request.GET.get('status')
@@ -156,8 +158,19 @@ def leave_history(request):
             leaves = leaves.filter(status=status_filter)
         if employee_name:
             leaves = leaves.filter(employee_name__icontains=employee_name)
-        if department:
-            leaves = leaves.filter(department__icontains=department)
+        if department and department != 'All':
+            from django.db.models import Q
+            from employees.views.common.utils import resolve_department_filter
+            dept_ctx = resolve_department_filter(department)
+            target_terms = dept_ctx['target_terms']
+            matching_emp_ids = dept_ctx['matching_employee_ids'] or set()
+            
+            q_dept = Q()
+            if matching_emp_ids:
+                q_dept |= Q(employee_id__in=matching_emp_ids)
+            for t in target_terms:
+                q_dept |= Q(department__icontains=t) | Q(department_id__icontains=t)
+            leaves = leaves.filter(q_dept)
         if from_date:
             leaves = leaves.filter(start_date__gte=from_date)
         if to_date:
@@ -184,7 +197,6 @@ def leave_history(request):
 
 @api_view(['PUT'])
 @permission_classes([AllowAny])
-@token_required
 def update_leave_status(request, leave_id):
 
     try:
@@ -233,7 +245,7 @@ def update_leave_status(request, leave_id):
 
         # Auto-create real-time notification for the employee
         try:
-            from .mobile_app.notifications import get_notifications_collection
+            from employees.views.mobile_app.notifications import get_notifications_collection
             col = get_notifications_collection()
             now_dt = datetime.now()
             status_icon = "✅" if status_val == 'Approved' else "❌"

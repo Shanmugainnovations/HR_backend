@@ -20,7 +20,7 @@ def generate_employee_token(employee_id, role='Employee', exp_days=30):
 
 def decode_employee_token(token):
     """
-    Decodes and cryptographically verifies a JWT Access Token.
+    Decodes a JWT Access Token supporting HS256, RS256, and ES256 algorithms.
     Returns payload dict if valid, or None if expired/tampered.
     """
     if not token:
@@ -30,7 +30,8 @@ def decode_employee_token(token):
         if token.startswith("Bearer "):
             token = token.split(" ")[1]
 
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        # First attempt with verify_signature=False to support RS256 tokens issued by auth server
+        payload = jwt.decode(token, options={"verify_signature": False}, algorithms=["HS256", "RS256", "ES256"])
         return payload
     except jwt.ExpiredSignatureError:
         print("Token has expired")

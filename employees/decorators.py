@@ -41,7 +41,12 @@ def token_required(view_func):
 
         # 4. Attach verified employee payload to request
         request.token_payload = payload
-        request.authenticated_employee_id = payload.get('employee_id')
+        request.authenticated_employee_id = (
+            payload.get('employee_id') or
+            payload.get('employeeId') or
+            payload.get('aud') or
+            payload.get('sub')
+        )
 
         return view_func(request, *args, **kwargs)
 

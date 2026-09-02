@@ -1,6 +1,120 @@
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import User
+from django.contrib.auth.hashers import make_password
+from bson import ObjectId
+
+class ObjectIdField(models.Field):
+    """ Custom field to store ObjectId """
+    def __init__(self, *args, **kwargs):
+        kwargs['unique'] = True
+        super().__init__(*args, **kwargs)
+
+    def get_prep_value(self, value):
+        return str(value) if isinstance(value, ObjectId) else value
+
+    def from_db_value(self, value, expression, connection):
+        return ObjectId(value) if value else None
+
+class Admin_groups(models.Model): 
+    email = models.EmailField(max_length=500, unique=True)
+    employee_name = models.CharField(max_length=500)
+    password = models.CharField(max_length=500)
+    role = models.CharField(max_length=100)
+    mobile = models.CharField(max_length=100, blank=True, null=True)
+    id = ObjectIdField(primary_key=True, default=ObjectId)
+    
+    username = None  # Remove username field as we use email for authentication
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = []
+
+    def save(self, *args, **kwargs):
+        """Ensure password is hashed before saving"""
+        if self.password and not self.password.startswith("pbkdf2_sha256$"):
+            self.password = make_password(self.password)
+        super().save(*args, **kwargs)
+
+class Profile(models.Model):
+    employeeId = models.CharField(max_length=100, unique=True, primary_key=True)
+    employeeName = models.CharField(max_length=255)
+    fatherName = models.CharField(max_length=255, null=True, blank=True)
+    motherName = models.CharField(max_length=255, null=True, blank=True)
+    gender = models.CharField(max_length=10, null=True, blank=True)
+    mobileNumber = models.CharField(max_length=15, null=True, blank=True)
+    bloodGroup = models.CharField(max_length=5, null=True, blank=True)
+    maritalStatus = models.CharField(max_length=20, null=True, blank=True)
+    guardianNumber = models.CharField(max_length=15, null=True, blank=True)
+    dateOfBirth = models.DateTimeField(null=True, blank=True)
+    age = models.IntegerField(null=True, blank=True)
+    email = models.EmailField(blank=True, null=True)
+
+    department = models.CharField(max_length=100, null=True, blank=True)
+    designation = models.CharField(max_length=100, null=True, blank=True)
+    primaryRole = models.CharField(max_length=100, default='Employee')
+    additionalRoles = models.JSONField(default=list)
+    dataEntitlements = models.JSONField(default=list)
+    hospitalCode = models.CharField(max_length=100, default="SH001")
+
+    employmentStatus = models.CharField(max_length=20, default='Active')
+    registrationNumber = models.CharField(max_length=100, null=True, blank=True)
+    validityDate = models.DateField(null=True, blank=True)
+
+    kycDetails = models.JSONField(default=dict)
+    familyDetails = models.JSONField(default=dict)
+    qualifications = models.JSONField(default=list)
+    experiences = models.JSONField(default=list)
+
+    bankDetails = models.JSONField(default=dict)
+    salaryDetails = models.JSONField(default=dict)
+    fnfStatus = models.JSONField(default=dict)
+
+    profileImage = models.CharField(max_length=255, null=True, blank=True)
+    signatureFileId = models.CharField(max_length=100, null=True, blank=True)
+    created_by = models.CharField(max_length=100, blank=True, null=True)
+    created_date = models.DateTimeField(auto_now_add=True)
+    lastmodified_by = models.CharField(max_length=100, blank=True, null=True)
+    lastmodified_date = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'backend_diagnostics_profile'
+
+class GridFSFile(models.Model):
+    file_id = models.CharField(max_length=100, unique=True)
+    filename = models.CharField(max_length=500)
+    content_type = models.CharField(max_length=100)
+    file_type = models.CharField(max_length=100)
+    upload_date = models.DateTimeField(auto_now_add=True)
+    uploaded_by = models.CharField(max_length=100, default='system')
+    
+    class Meta:
+        db_table = 'gridfs_files'
+
+    def __str__(self):
+        return f"{self.filename} ({self.file_id})"
+
+class user(models.Model):
+    employeeId = models.CharField(max_length=50, unique=True, primary_key=True)
+    password = models.CharField(max_length=500)
+    is_active = models.BooleanField(default=True)
+    created_date = models.DateTimeField(auto_now_add=True)
+    created_by = models.CharField(max_length=100, default='system')
+    lastmodified_by = models.CharField(max_length=100, default='system')
+    lastmodified_date = models.DateTimeField(auto_now=True)
+    is_password_set = models.BooleanField(default=False)
+    role = models.CharField(max_length=100, default='Employee')
+
+    class Meta:
+        db_table = 'backend_diagnostics_user'
+
+    def save(self, *args, **kwargs):
+        """Ensure password is hashed before saving"""
+        if self.password and not self.password.startswith("pbkdf2_sha256$"):
+            self.password = make_password(self.password)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.employeeId
+
 
 def extract_actor_id(request):
     """
@@ -60,8 +174,12 @@ def extract_actor_id(request):
         if actor_id:
             return str(actor_id)
 
-    if hasattr(request, 'data') and request.data:
+    if hasattr(request, 'data') and isinstance(request.data, dict) and request.data:
         actor_id = request.data.get('sent_by') or request.data.get('reviewer_name') or request.data.get('employee_id') or request.data.get('created_by') or request.data.get('user_id')
+        if actor_id:
+            return str(actor_id)
+    elif hasattr(request, 'data') and isinstance(request.data, list) and len(request.data) > 0 and isinstance(request.data[0], dict):
+        actor_id = request.data[0].get('actor_name') or request.data[0].get('created_by') or request.data[0].get('lastmodified_by') or request.data[0].get('employee_id')
         if actor_id:
             return str(actor_id)
 
@@ -167,10 +285,11 @@ class Register(AuditableModel):
     password         = models.CharField(max_length=500)
     confirmPassword  = models.CharField(max_length=500)
     allowed_ip       = models.CharField(max_length=45, null=True, blank=True)
-    employee_id      = models.CharField(max_length=50, null=True, blank=True)
-    department       = models.CharField(max_length=100, null=True, blank=True)
-    device           = models.CharField(max_length=255, unique=True, null=True, blank=True)
-    fingerprint      = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    employee_id          = models.CharField(max_length=50, null=True, blank=True)
+    department           = models.CharField(max_length=100, null=True, blank=True)
+    assigned_departments = models.CharField(max_length=500, null=True, blank=True)
+    device               = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    fingerprint          = models.CharField(max_length=255, unique=True, null=True, blank=True)
 
     def __str__(self):
         return f"{self.name} ({self.role}) — IP: {self.allowed_ip or 'N/A'}"
@@ -228,11 +347,31 @@ class Department(AuditableModel):
     def __str__(self):
         return self.name
 
+def generate_shiftschedule_id():
+    try:
+        from pymongo import MongoClient
+        import os
+        client = MongoClient(os.environ.get('GLOBAL_DB_HOST', 'mongodb://admin:SMRFT%40test@45.120.136.230:27017/'))
+        db = client[os.environ.get('GLOBAL_DB_NAME', 'Global')]
+        max_doc = db['employees_employeeshiftschedule'].find_one(
+            {'id': {'$ne': None}},
+            sort=[('id', -1)]
+        )
+        if max_doc and max_doc.get('id'):
+            return int(max_doc['id']) + 1
+    except Exception:
+        pass
+    return 1
+
 class EmployeeShiftSchedule(AuditableModel):
-    id       = models.AutoField(primary_key=True)
+    id       = models.IntegerField(primary_key=True, default=generate_shiftschedule_id, editable=False)
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='shift_schedules')
     shift    = models.ForeignKey(Shift, on_delete=models.CASCADE)
     date     = models.DateField()
+    created_by = models.CharField(max_length=150, null=True, blank=True)
+    created_date = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    lastmodified_by = models.CharField(max_length=150, null=True, blank=True)
+    lastmodified_date = models.DateTimeField(auto_now=True, null=True, blank=True)
     
     class Meta:
         unique_together = ('employee', 'date')
