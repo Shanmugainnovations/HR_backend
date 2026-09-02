@@ -1,3 +1,4 @@
+from employees.permissions import HasRoleAndDataPermission
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
 def leave_type_list_create(request):
+
     if request.method == 'GET':
         leave_types = LeaveType.objects.all().order_by('name')
         serializer = LeaveTypeSerializer(leave_types, many=True)
@@ -18,9 +20,13 @@ def leave_type_list_create(request):
     elif request.method == 'POST':
         serializer = LeaveTypeSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            from employees.models import extract_actor_id
+            actor_id = extract_actor_id(request)
+            lt = serializer.save(created_by=actor_id, lastmodified_by=actor_id)
+            print(f"🔑 AUDIT SAVED -> LeaveType CreatedBy: {lt.created_by}")
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 @api_view(['GET', 'PUT', 'DELETE'])
 @permission_classes([AllowAny])
@@ -37,7 +43,8 @@ def leave_type_detail(request, pk):
     elif request.method == 'PUT':
         serializer = LeaveTypeSerializer(leave_type, data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            lt = serializer.save()
+            lt.save_with_audit(request)
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -49,7 +56,7 @@ def leave_type_detail(request, pk):
 @permission_classes([AllowAny])
 def apply_leave(request):
     try:
-        employee_id = request.data.get('employee_id')
+        employee_id = getattr(request, 'authenticated_employee_id', None) or request.data.get('employee_id')
         if not employee_id:
             return Response({"error": "Employee ID is required"}, status=400)
             
@@ -71,7 +78,7 @@ def apply_leave(request):
 @permission_classes([AllowAny])
 def my_leaves(request):
     try:
-        employee_id = request.GET.get('employee_id')
+        employee_id = getattr(request, 'authenticated_employee_id', None) or request.GET.get('employee_id')
         if not employee_id:
             return Response({"error": "Employee ID is required"}, status=400)
             
@@ -95,18 +102,26 @@ def my_leaves(request):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def pending_leaves(request):
-    # This would typically be for Admin/HR
     try:
         department_id = request.GET.get('department_id')
         department = request.GET.get('department')
         
         leaves = LeaveRequest.objects.all().order_by('-applied_on')
         
-        if department:
-            # First try filtering by department name
-            leaves = leaves.filter(department=department)
+        if department and department != 'All':
+            from django.db.models import Q
+            from employees.views.common.utils import resolve_department_filter
+            dept_ctx = resolve_department_filter(department)
+            target_terms = dept_ctx['target_terms']
+            matching_emp_ids = dept_ctx['matching_employee_ids'] or set()
+            
+            q_dept = Q()
+            if matching_emp_ids:
+                q_dept |= Q(employee_id__in=matching_emp_ids)
+            for t in target_terms:
+                q_dept |= Q(department__icontains=t) | Q(department_id__icontains=t)
+            leaves = leaves.filter(q_dept)
         elif department_id:
-            # Fallback to department_id
             leaves = leaves.filter(department_id=department_id)
             
         data = [{
@@ -137,15 +152,25 @@ def leave_history(request):
         from_date = request.GET.get('from_date')
         to_date = request.GET.get('to_date')
         
-        # Start with processed leaves
         leaves = LeaveRequest.objects.exclude(status='Pending')
         
         if status_filter:
             leaves = leaves.filter(status=status_filter)
         if employee_name:
             leaves = leaves.filter(employee_name__icontains=employee_name)
-        if department:
-            leaves = leaves.filter(department__icontains=department)
+        if department and department != 'All':
+            from django.db.models import Q
+            from employees.views.common.utils import resolve_department_filter
+            dept_ctx = resolve_department_filter(department)
+            target_terms = dept_ctx['target_terms']
+            matching_emp_ids = dept_ctx['matching_employee_ids'] or set()
+            
+            q_dept = Q()
+            if matching_emp_ids:
+                q_dept |= Q(employee_id__in=matching_emp_ids)
+            for t in target_terms:
+                q_dept |= Q(department__icontains=t) | Q(department_id__icontains=t)
+            leaves = leaves.filter(q_dept)
         if from_date:
             leaves = leaves.filter(start_date__gte=from_date)
         if to_date:
@@ -173,6 +198,7 @@ def leave_history(request):
 @api_view(['PUT'])
 @permission_classes([AllowAny])
 def update_leave_status(request, leave_id):
+
     try:
         status_val = request.data.get('status')
         reviewer_name = request.data.get('reviewer_name')
@@ -216,7 +242,33 @@ def update_leave_status(request, leave_id):
                 import traceback
                 traceback.print_exc()
                 print("Failed to update roster on leave approval:", roster_e)
-                
+
+        # Auto-create real-time notification for the employee
+        try:
+            from employees.views.mobile_app.notifications import get_notifications_collection
+            col = get_notifications_collection()
+            now_dt = datetime.now()
+            status_icon = "✅" if status_val == 'Approved' else "❌"
+            title = f"Leave Request {status_val} {status_icon}"
+            start_str = leave.start_date.strftime('%d %b %Y') if hasattr(leave.start_date, 'strftime') else str(leave.start_date)
+            end_str = leave.end_date.strftime('%d %b %Y') if hasattr(leave.end_date, 'strftime') else str(leave.end_date)
+            
+            by_str = f" by {reviewer_name}" if reviewer_name else ""
+            message = f"Your request for {leave.leave_type} ({start_str} to {end_str}) has been {status_val.lower()}{by_str}."
+
+            col.insert_one({
+                "employee_id": str(leave.employee_id),
+                "title": title,
+                "message": message,
+                "category": "leave",
+                "is_read": False,
+                "action_url": "",
+                "created_at": now_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                "created_at_ts": now_dt.timestamp()
+            })
+        except Exception as notif_err:
+            print("Error pushing leave notification", notif_err)
+            
         return Response({"message": f"Leave {status_val}"}, status=200)
     except LeaveRequest.DoesNotExist:
         return Response({"error": "Leave request not found"}, status=404)

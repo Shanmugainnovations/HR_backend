@@ -1,17 +1,19 @@
+from employees.permissions import HasRoleAndDataPermission
 import csv
 import os
 import calendar
 import pandas as pd
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from django.http import HttpResponse, JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from pymongo import MongoClient
-from ..models import EmployeeShiftSchedule, Employee, Shift, Department
+from employees.models import EmployeeShiftSchedule, Employee, Shift, Department
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def export_roster_csv(request):
+
     from_date_str = request.query_params.get('from_date')
     to_date_str = request.query_params.get('to_date')
     month_str = request.query_params.get('month')
@@ -37,24 +39,8 @@ def export_roster_csv(request):
     else:
         return HttpResponse("Either from_date/to_date or month parameter is required", status=400)
 
-    # Resolve Department Filter (handle numeric IDs from frontend)
-    all_names = []
-    codes = []
-    raw_ids = []
-    
-    from ..models import Department
-    sql_depts = list(Department.objects.all())
-    sql_dept_map = {d.id: d.name for d in sql_depts}
-
-    if department_filter and department_filter != 'All':
-        raw_ids = [d.strip() for d in department_filter.split(',')]
-        for rid in raw_ids:
-            if rid.isdigit():
-                d_id = int(rid)
-                if d_id in sql_dept_map:
-                    all_names.append(sql_dept_map[d_id])
-            else:
-                all_names.append(rid)
+    from employees.views.common.utils import resolve_department_filter
+    dept_ctx = resolve_department_filter(department_filter)
 
     # 1. Fetch Employees and Department Info from Mongo (Global DB)
     try:
@@ -69,29 +55,10 @@ def export_roster_csv(request):
         # Create department lookup map
         dept_map = {
             d.get('department_code'): d.get('department_name')
-            for d in departments_col.find() # Removed is_active filter
+            for d in departments_col.find()
         }
 
-        # Resolve names to codes
-        if all_names:
-            resolved_codes = list(departments_col.find(
-                {"department_name": {"$in": all_names}},
-                {"department_code": 1}
-            ))
-            codes = [c.get("department_code") for c in resolved_codes]
-
-        search_values = all_names + codes + raw_ids
-
-        # Fetch profiles based on department filter
-        query = {}
-        if search_values:
-            query = {
-                "$or": [
-                    {"department": {"$in": search_values}},
-                    {"department_id": {"$in": search_values}},
-                    {"department_name": {"$in": search_values}}
-                ]
-            }
+        query = dept_ctx['mongo_query']
         
         # Fetch only employees with face registered from SQL
         from employees.models import Employee
@@ -137,7 +104,6 @@ def export_roster_csv(request):
         curr += timedelta(days=1)
         if len(date_list) > 62: break
 
-    from datetime import timedelta
     for sch in schedules:
         emp_id = sch.employee.employee_id
         day_str = sch.date.strftime("%Y-%m-%d")
@@ -151,8 +117,9 @@ def export_roster_csv(request):
 
     # 3. Generate CSV
     filename = f"roster_{month_label}.csv"
-    if all_names and len(all_names) == 1:
-        filename = f"roster_{month_label}_{all_names[0]}.csv"
+    if dept_ctx.get('target_terms') and len(dept_ctx['target_terms']) == 1:
+        clean_dept = list(dept_ctx['target_terms'])[0].replace(' ', '_')
+        filename = f"roster_{month_label}_{clean_dept}.csv"
     
     response = HttpResponse(content_type='text/csv')
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
@@ -208,20 +175,8 @@ def export_roster_xlsx(request):
     else:
         return HttpResponse("Either from_date/to_date or month parameter is required", status=400)
 
-    # Resolve Department Info
-    from ..models import Department
-    sql_depts = list(Department.objects.all())
-    sql_dept_map = {d.id: d.name for d in sql_depts}
-    all_names = []
-    if department_filter and department_filter != 'All':
-        raw_ids = [d.strip() for d in department_filter.split(',')]
-        for rid in raw_ids:
-            if rid.isdigit():
-                d_id = int(rid)
-                if d_id in sql_dept_map:
-                    all_names.append(sql_dept_map[d_id])
-            else:
-                all_names.append(rid)
+    from employees.views.common.utils import resolve_department_filter
+    dept_ctx = resolve_department_filter(department_filter)
 
     # 1. Fetch Employees from Mongo
     try:
@@ -233,12 +188,7 @@ def export_roster_xlsx(request):
         departments_col = db['backend_diagnostics_Departments']
         
         dept_lookup = {d.get('department_code'): d.get('department_name') for d in departments_col.find()}
-        
-        query = {}
-        if all_names:
-            resolved_codes = [d.get("department_code") for d in departments_col.find({"department_name": {"$in": all_names}}, {"department_code": 1})]
-            search_values = all_names + resolved_codes
-            query = {"$or": [{"department": {"$in": search_values}}, {"department_id": {"$in": search_values}}, {"department_name": {"$in": search_values}}]}
+        query = dept_ctx['mongo_query']
         
         # Fetch only employees with face registered from SQL
         from employees.models import Employee
@@ -287,8 +237,9 @@ def export_roster_xlsx(request):
 
     df = pd.DataFrame(data)
     filename = f"roster_{month_label}.xlsx"
-    if all_names and len(all_names) == 1:
-        filename = f"roster_{month_label}_{all_names[0]}.xlsx"
+    if dept_ctx.get('target_terms') and len(dept_ctx['target_terms']) == 1:
+        clean_dept = list(dept_ctx['target_terms'])[0].replace(' ', '_')
+        filename = f"roster_{month_label}_{clean_dept}.xlsx"
     
     # 3. Create Excel using openpyxl for basic styling
     from openpyxl import Workbook
@@ -359,7 +310,7 @@ def export_roster_xlsx(request):
     return response
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def import_roster_xlsx(request):
     file = request.FILES.get('file')
     from_date_str = request.data.get('from_date')
@@ -464,7 +415,7 @@ def import_roster_xlsx(request):
         return JsonResponse({"error": str(e)}, status=500)
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def preview_roster_xlsx(request):
     file = request.FILES.get('file')
     from_date_str = request.data.get('from_date')
@@ -589,7 +540,7 @@ def preview_roster_xlsx(request):
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def approve_roster_data(request):
     data = request.data.get('preview')
     if not data:

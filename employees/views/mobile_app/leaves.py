@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 from employees.models import LeaveRequest, LeaveType
+from employees.decorators import token_required
 import datetime
 
 def get_leave_type_name(lt):
@@ -15,7 +16,9 @@ def get_leave_type_name(lt):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@token_required
 def apply_leave(request):
+
     try:
         data = request.data
         employee_id = data.get('employee_id')
@@ -38,11 +41,12 @@ def apply_leave(request):
         if not leave_type_obj:
             # Create or get fallback leave type
             name = str(leave_type_input) if leave_type_input else "Casual Leave"
-            leave_type_obj, _ = LeaveType.objects.get_or_create(name=name, defaults={'code': name[:3].upper() if hasattr(LeaveType, 'code') else name})
+            leave_type_obj, _ = LeaveType.objects.get_or_create(name=name)
+
 
         leave_type_str = leave_type_obj.name if hasattr(leave_type_obj, 'name') else str(leave_type_obj)
 
-        leave = LeaveRequest.objects.create(
+        leave = LeaveRequest(
             employee_id=employee_id,
             employee_name=data.get('employee_name', 'Employee'),
             department=data.get('department', 'General'),
@@ -53,6 +57,8 @@ def apply_leave(request):
             reason=reason,
             status='Pending'
         )
+        leave.save_with_audit(request)
+
 
         return Response({
             "message": "Leave request submitted successfully",
@@ -66,7 +72,9 @@ def apply_leave(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def my_leaves(request):
+
     try:
         employee_id = request.GET.get('employee_id')
         if not employee_id:
@@ -94,6 +102,7 @@ def my_leaves(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def pending_leaves(request):
     try:
         leaves = LeaveRequest.objects.filter(status='Pending').order_by('-applied_on')
@@ -116,20 +125,56 @@ def pending_leaves(request):
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@api_view(['PUT', 'POST'])
+from employees.decorators import token_required
+
+@api_view(['PUT'])
 @permission_classes([AllowAny])
+@token_required
 def update_leave_status(request, leave_id):
     try:
         leave = get_object_or_404(LeaveRequest, id=leave_id)
         new_status = request.data.get('status')
         remarks = request.data.get('admin_remarks', '')
+        reviewer_name = request.data.get('reviewer_name', '')
 
         if new_status not in ['Approved', 'Rejected', 'Pending']:
             return Response({"error": "Invalid status value"}, status=status.HTTP_400_BAD_REQUEST)
 
         leave.status = new_status
-        leave.admin_remarks = remarks
-        leave.save()
+        if hasattr(leave, 'admin_remarks'):
+            leave.admin_remarks = remarks
+        if reviewer_name and hasattr(leave, 'reviewed_by_name'):
+            leave.reviewed_by_name = reviewer_name
+        leave.save_with_audit(request)
+
+        # Auto-create real-time notification for employee in MongoDB
+        try:
+            from .notifications import get_notifications_collection, send_expo_push_notification
+            col = get_notifications_collection()
+            now_dt = datetime.datetime.now()
+            status_icon = "✅" if new_status == 'Approved' else "❌"
+            title = f"Leave Request {new_status} {status_icon}"
+            start_str = leave.start_date.strftime('%d %b %Y') if hasattr(leave.start_date, 'strftime') else str(leave.start_date)
+            end_str = leave.end_date.strftime('%d %b %Y') if hasattr(leave.end_date, 'strftime') else str(leave.end_date)
+            
+            by_str = f" by {reviewer_name}" if reviewer_name else ""
+            message = f"Your request for {leave.leave_type} ({start_str} to {end_str}) has been {new_status.lower()}{by_str}."
+
+            col.insert_one({
+                "employee_id": str(leave.employee_id),
+                "title": title,
+                "message": message,
+                "category": "leave",
+                "is_read": False,
+                "action_url": "",
+                "created_at": now_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                "created_at_ts": now_dt.timestamp()
+            })
+            send_expo_push_notification(leave.employee_id, title, message, {"category": "leave"})
+            print(f"Successfully pushed leave notification for employee {leave.employee_id}")
+        except Exception as notif_err:
+            print("Error pushing leave notification", notif_err)
+
 
         return Response({"message": f"Leave status updated to {new_status}"}, status=status.HTTP_200_OK)
 

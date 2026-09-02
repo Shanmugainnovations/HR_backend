@@ -1,3 +1,4 @@
+from employees.permissions import HasRoleAndDataPermission
 import base64
 from datetime import datetime
 import pytz
@@ -13,7 +14,9 @@ from employees.face_utils import (
     SpoofingDetectedError,
     match_face_1_to_n
 )
-from employees.views.attendance import get_optimized_encodings
+from employees.views.attendance_management.attendance import get_optimized_encodings
+
+from employees.decorators import token_required
 
 IST = pytz.timezone('Asia/Kolkata')
 
@@ -21,6 +24,7 @@ IST = pytz.timezone('Asia/Kolkata')
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def issue_canteen_token(request):
+
     """
     Scans employee face, verifies identity & anti-spoofing, checks daily quota (1 token per employee per day),
     and issues a Canteen Tea Token.
@@ -161,7 +165,7 @@ def issue_canteen_token(request):
         daily_count = CanteenTokenIssue.objects.filter(issued_at__range=(today_start, today_end)).count() + 1
         token_number = f"TEA-{today_str}-{daily_count:04d}"
 
-        token_record = CanteenTokenIssue.objects.create(
+        token_record = CanteenTokenIssue(
             token_number=token_number,
             employee_id=matched_employee_id,
             employee_name=matched_employee_name,
@@ -172,6 +176,7 @@ def issue_canteen_token(request):
             device_id=device_id,
             status='ISSUED'
         )
+        token_record.save_with_audit(request)
 
         return Response({
             'status': 'success',
@@ -196,43 +201,37 @@ def issue_canteen_token(request):
         traceback.print_exc()
         return Response({
             'status': 'error',
-            'message': f'Server error: {str(e) or repr(e)}'
+            'message': f"Canteen Token Issue Error: {str(e)}"
         }, status=500)
-
 
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_canteen_today_summary(request):
-    """
-    Returns today's total tea tokens issued, unique employees served, and breakdown.
-    """
     try:
         today = timezone.now().astimezone(IST).date()
         today_start = IST.localize(datetime.combine(today, datetime.min.time()))
         today_end = IST.localize(datetime.combine(today, datetime.max.time()))
 
-        today_tokens = list(CanteenTokenIssue.objects.filter(issued_at__range=(today_start, today_end)))
-        total_tokens_today = len(today_tokens)
-        unique_employees_today = len(set(t.employee_id for t in today_tokens))
+        tokens = CanteenTokenIssue.objects.filter(issued_at__range=(today_start, today_end))
 
-        recent_tokens = []
-        for item in sorted(today_tokens, key=lambda x: x.issued_at, reverse=True)[:10]:
-            recent_tokens.append({
-                'token_number': item.token_number,
-                'employee_id': item.employee_id,
-                'employee_name': item.employee_name,
-                'item_name': item.item_name,
-                'issued_at': item.issued_at.astimezone(IST).strftime('%I:%M:%S %p') if item.issued_at else '',
-                'status': item.status
-            })
+        total_issued = tokens.count()
+        total_redeemed = tokens.filter(status='REDEEMED').count()
+        total_pending = tokens.filter(status='ISSUED').count()
+        unique_employees = len(set(tokens.values_list('employee_id', flat=True)))
 
         return Response({
             'status': 'success',
             'date': today.strftime('%Y-%m-%d'),
-            'total_tokens_today': total_tokens_today,
-            'unique_employees_today': unique_employees_today,
-            'recent_tokens': recent_tokens
+            'total_tokens_today': total_issued,
+            'unique_employees_today': unique_employees,
+            'summary': {
+                'total_issued': total_issued,
+                'total_tokens_today': total_issued,
+                'unique_employees_today': unique_employees,
+                'total_redeemed': total_redeemed,
+                'total_pending': total_pending
+            }
         }, status=200)
 
     except Exception as e:
@@ -242,14 +241,26 @@ def get_canteen_today_summary(request):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_canteen_token_history(request):
-    """
-    Returns paginated / filtered list of all canteen tokens for HR reports.
-    """
     try:
-        date_str = request.GET.get('date')
-        search_query = request.GET.get('search', '').strip()
+        employee_id = request.query_params.get('employee_id')
+        search_query = request.query_params.get('search')
+        date_str = request.query_params.get('date')
 
         queryset = CanteenTokenIssue.objects.all().order_by('-issued_at')
+
+        # Filter by specific employee_id
+        if employee_id:
+            queryset = queryset.filter(employee_id=str(employee_id).strip())
+
+        # Filter by generic search query (employee_id, employee_name, department, or token_number)
+        if search_query:
+            q = str(search_query).strip()
+            queryset = queryset.filter(
+                models.Q(employee_id__icontains=q) |
+                models.Q(employee_name__icontains=q) |
+                models.Q(department__icontains=q) |
+                models.Q(token_number__icontains=q)
+            )
 
         if date_str:
             target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
@@ -257,15 +268,8 @@ def get_canteen_token_history(request):
             t_end = IST.localize(datetime.combine(target_date, datetime.max.time()))
             queryset = queryset.filter(issued_at__range=(t_start, t_end))
 
-        if search_query:
-            queryset = queryset.filter(
-                models.Q(employee_id__icontains=search_query) |
-                models.Q(employee_name__icontains=search_query) |
-                models.Q(token_number__icontains=search_query)
-            )
-
         tokens_data = []
-        for t in queryset[:200]:
+        for t in queryset[:500]:
             tokens_data.append({
                 'id': t.id,
                 'token_number': t.token_number,
@@ -289,7 +293,6 @@ def get_canteen_token_history(request):
         return Response({'status': 'error', 'message': str(e)}, status=500)
 
 
-
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
 def manage_canteen_rules(request):
@@ -305,12 +308,12 @@ def manage_canteen_rules(request):
             rule.save()
             return Response({
                 'status': 'success',
-                'message': 'Canteen rules updated successfully!',
+                'message': 'Canteen quota rule updated',
                 'max_daily_quota': rule.max_daily_quota
             }, status=200)
 
     return Response({
         'status': 'success',
         'max_daily_quota': rule.max_daily_quota,
-        'is_active': rule.is_active
+        'item_name': 'Tea'
     }, status=200)

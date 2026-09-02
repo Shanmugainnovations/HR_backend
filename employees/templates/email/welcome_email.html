@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to Company</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f4f4;
+            line-height: 1.6;
+        }
+        
+        .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 40px 30px;
+            text-align: center;
+            color: white;
+        }
+        
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 600;
+        }
+        
+        .header p {
+            margin: 10px 0 0 0;
+            font-size: 16px;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 40px 30px;
+        }
+        
+        .welcome-message {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .welcome-message h2 {
+            color: #333;
+            font-size: 24px;
+            margin-bottom: 15px;
+        }
+        
+        .welcome-message p {
+            color: #666;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+        
+        .employee-details {
+            background-color: #f8f9fa;
+            padding: 25px;
+            border-radius: 10px;
+            margin: 30px 0;
+            border-left: 5px solid #667eea;
+        }
+        
+        .employee-details h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            padding: 8px 0;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .detail-row:last-child {
+            border-bottom: none;
+        }
+        
+        .detail-label {
+            font-weight: 600;
+            color: #495057;
+        }
+        
+        .detail-value {
+            color: #6c757d;
+        }
+        
+        .cta-section {
+            text-align: center;
+            margin: 40px 0;
+            padding: 30px;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 15px;
+        }
+        
+        .cta-section h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 20px;
+        }
+        
+        .cta-section p {
+            color: #666;
+            margin-bottom: 25px;
+            font-size: 16px;
+        }
+        
+        .reset-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 35px;
+            text-decoration: none;
+            border-radius: 50px;
+            font-weight: 600;
+            font-size: 16px;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+            transition: all 0.3s ease;
+        }
+        
+        .reset-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+        }
+        
+        .alternative-link {
+            margin-top: 25px;
+            padding: 20px;
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 8px;
+        }
+        
+        .alternative-link p {
+            margin: 0;
+            font-size: 14px;
+            color: #856404;
+        }
+        
+        .alternative-link a {
+            color: #667eea;
+            word-break: break-all;
+        }
+        
+        .security-notice {
+            background-color: #d1ecf1;
+            border: 1px solid #bee5eb;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 30px 0;
+        }
+        
+        .security-notice h4 {
+            color: #0c5460;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        
+        .security-notice ul {
+            color: #0c5460;
+            margin: 0;
+            padding-left: 20px;
+        }
+        
+        .security-notice li {
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+        
+        .footer {
+            background-color: #343a40;
+            color: #adb5bd;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .footer h4 {
+            color: #ffffff;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        
+        .footer p {
+            margin: 5px 0;
+            font-size: 14px;
+        }
+        
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        
+        .footer a:hover {
+            text-decoration: underline;
+        }
+        
+        .social-links {
+            margin-top: 20px;
+        }
+        
+        .social-links a {
+            display: inline-block;
+            margin: 0 10px;
+            color: #adb5bd;
+            font-size: 18px;
+            text-decoration: none;
+        }
+        
+        .social-links a:hover {
+            color: #ffffff;
+        }
+        
+        @media (max-width: 600px) {
+            .email-container {
+                margin: 0;
+                box-shadow: none;
+            }
+            
+            .header, .content, .footer {
+                padding: 20px;
+            }
+            
+            .employee-details {
+                padding: 15px;
+            }
+            
+            .detail-row {
+                flex-direction: column;
+            }
+            
+            .detail-label {
+                margin-bottom: 5px;
+            }
+            
+            .reset-button {
+                padding: 12px 25px;
+                font-size: 14px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <!-- Header -->
+        <div class="header">
+            <h1>Welcome to Our Company!</h1>
+            <p>Your employee account has been created</p>
+        </div>
+        
+        <!-- Content -->
+        <div class="content">
+            <div class="welcome-message">
+                <h2>Hello {{ employee_name }}!</h2>
+                <p>We're excited to have you join our team. Your employee account has been successfully created.</p>
+                <p>To get started, please set up your password using the button below.</p>
+            </div>
+            
+            <!-- Employee Details -->
+            <div class="employee-details">
+                <h3>Your Account Details</h3>
+                <div class="detail-row">
+                    <span class="detail-label">Employee ID:</span>
+                    <span class="detail-value">{{ employee_id }}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Email:</span>
+                    <span class="detail-value">{{ employee_email }}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Department:</span>
+                    <span class="detail-value">{{ department }}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Designation:</span>
+                    <span class="detail-value">{{ designation }}</span>
+                </div>
+            </div>
+            
+            <!-- CTA Section -->
+            <div class="cta-section">
+                <h3>Set Your Password</h3>
+                <p>Click the button below to create your secure password and access your account.</p>
+                
+                <a href="{{ reset_url }}" class="reset-button">Set My Password</a>
+                
+                <div class="alternative-link">
+                    <p><strong>Button not working?</strong> Copy and paste this link into your browser:</p>
+                    <a href="{{ reset_url }}">{{ reset_url }}</a>
+                </div>
+            </div>
+            
+            <!-- Security Notice -->
+            <div class="security-notice">
+                <h4>🔒 Security Information</h4>
+                <ul>
+                    <li>This link will expire in 24 hours for your security</li>
+                    <li>If you didn't expect this email, please contact HR immediately</li>
+                    <li>Never share your login credentials with anyone</li>
+                    <li>Use a strong, unique password for your account</li>
+                </ul>
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <div class="footer">
+            <h4>Need Help?</h4>
+            <p>If you have any questions or need assistance, please contact:</p>
+            <p>HR Department: <a href="mailto:hr@company.com">hr@company.com</a></p>
+            <p>IT Support: <a href="mailto:support@company.com">support@company.com</a></p>
+            <p>Phone: +1 (555) 123-4567</p>
+            
+            <div class="social-links">
+                <a href="#" title="LinkedIn">📧</a>
+                <a href="#" title="Twitter">🐦</a>
+                <a href="#" title="Facebook">📘</a>
+            </div>
+            
+            <p style="margin-top: 20px; font-size: 12px; opacity: 0.7;">
+                © 2024 Your Company Name. All rights reserved.<br>
+                This is an automated message, please do not reply to this email.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

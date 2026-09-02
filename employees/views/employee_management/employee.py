@@ -1,3 +1,4 @@
+from employees.permissions import HasRoleAndDataPermission
 import os
 import base64
 import gridfs
@@ -22,12 +23,12 @@ from employees.models import Employee
 from employees.serializers import EmployeeCreateSerializer
 from employees.face_utils import imagefile_to_encoding, compute_md5
 
-from .utils import save_or_update_encoding, get_mongo_client
+from employees.views.common.utils import save_or_update_encoding, get_mongo_client
 
 load_dotenv()
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_all_employees_with_images(request):
     """
     Fetch all employees from Django DB with image previews.
@@ -54,30 +55,13 @@ def get_all_employees_with_images(request):
         employees = Employee.objects.filter(current_face_encoding__isnull=False).order_by("employee_id")
 
         if department and department != 'All':
-            db = client[global_db_name]
-            raw_ids = [d.strip() for d in department.split(',')]
-            
-            # Resolve numeric IDs to names
-            from ..models import Department
-            numeric_ids = [rid for rid in raw_ids if rid.isdigit()]
-            resolved_names = list(Department.objects.filter(id__in=numeric_ids).values_list('name', flat=True))
-            
-            search_values = raw_ids + resolved_names
-
-            # Find employees in these departments using IDs (dept_code) or names
-            query = {
-                "$or": [
-                    {"department": {"$in": search_values}},
-                    {"department_name": {"$in": search_values}}
-                ]
-            }
-            dept_profiles = list(db['backend_diagnostics_profile'].find(query, {"employeeId": 1}))
-            dept_emp_ids = [str(p["employeeId"]) for p in dept_profiles]
-            
+            from employees.views.common.utils import resolve_department_filter
+            dept_ctx = resolve_department_filter(department)
+            dept_emp_ids = dept_ctx['matching_employee_ids'] or set()
             employees = employees.filter(employee_id__in=dept_emp_ids)
 
         # 3️⃣ Create SQL Department Name to ID Map
-        from ..models import Department
+        from employees.models import Department
         sql_dept_map = {d.name: d.id for d in Department.objects.all()}
 
         # 4️⃣ Build response list
@@ -157,7 +141,7 @@ def serve_employee_image_by_md5(request, image_md5):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_employee_by_md5(request, image_md5):
     """
     Fetch employee details and image (preview) by image_md5
@@ -227,7 +211,7 @@ def disable_facial_recognition(request, employee_id):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_employee_detail(request, employee_id):
     """
     Fetch employee details and image (preview) by employee_id.
@@ -242,9 +226,20 @@ def get_employee_detail(request, employee_id):
         client = get_mongo_client()
 
         # 2️⃣ Find employee in SQL
+        # Lookup Register record for ID card info
+        from employees.models import Register
+        from employees.views.authentication.auth import resolve_department_names
+        reg = Register.objects.filter(employee_id=employee_id).first()
+
+        dept_name = resolve_department_names(reg.department) if reg and reg.department else "General Medical Services"
+        designation = getattr(reg, 'designation', '') or (reg.role if reg else '') or "Healthcare Professional"
+        blood_group = getattr(reg, 'blood_group', '') or "O +ve"
+        emergency_contact = getattr(reg, 'emergency_contact', '') or getattr(reg, 'phone', '') or "+91 98765 43210"
+        joining_date = str(getattr(reg, 'date_of_joining', '')) or "15 Jan 2024"
+
         emp = Employee.objects.filter(employee_id=employee_id).first()
-        
         if emp:
+
             fs_hr = gridfs.GridFS(client[hr_db_name])
             fs_global = gridfs.GridFS(client[global_db_name])
             base64_img = None
@@ -264,6 +259,12 @@ def get_employee_detail(request, employee_id):
                 "name": emp.name,
                 "is_active": emp.is_active,
                 "image_preview": base64_img,
+                "department_name": dept_name,
+                "designation": designation,
+                "blood_group": blood_group,
+                "emergency_contact": emergency_contact,
+                "joining_date": joining_date,
+                "role": reg.role if reg else "Employee",
                 "is_registered_face": True
             }, status=200)
 
@@ -283,15 +284,24 @@ def get_employee_detail(request, employee_id):
                 "name": profile.get("employeeName", ""),
                 "is_active": False,
                 "image_preview": preview_url,
+                "department_name": dept_name,
+                "designation": designation,
+                "blood_group": blood_group,
+                "emergency_contact": emergency_contact,
+                "joining_date": joining_date,
+                "role": reg.role if reg else "Employee",
                 "is_registered_face": False,
                 "message": "Found in Global Profile (Face not yet registered in HR)"
             }, status=200)
+
 
         return JsonResponse({"error": "Employee not found in local records or global profiles"}, status=404)
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
+
+import re
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -312,61 +322,18 @@ def get_all_employee_from_global(request):
         designations_col = db['backend_diagnostics_Designation']
 
         # ✅ Fetch all employees from Global DB
-        query = {}
         department_filter = request.query_params.get('department')
-        
-        if department_filter and department_filter != 'All':
-            raw_values = [d.strip() for d in department_filter.split(',')]
-            
-            # Resolve numeric IDs to names
-            from ..models import Department
-            numeric_ids = [rv for rv in raw_values if rv.isdigit()]
-            resolved_names = list(Department.objects.filter(id__in=numeric_ids).values_list('name', flat=True))
-            
-            search_values = raw_values + resolved_names
+        from employees.views.common.utils import resolve_department_filter
+        dept_ctx = resolve_department_filter(department_filter)
+        query = dept_ctx['mongo_query']
 
-            # Resolve department names/codes to Mongo codes
-            dept_cursor = departments_col.find({
-                "$or": [
-                    {"department_name": {"$in": search_values}},
-                    {"department_code": {"$in": search_values}}
-                ]
-            })
-            dept_codes = [d.get("department_code") for d in dept_cursor]
-            
-            # Fallback to search values if no codes found
-            if not dept_codes:
-                dept_codes = search_values
-                
-            query['department'] = {"$in": dept_codes}
+        from employees.views.common.utils import get_cached_reference_maps
+        dept_map, desig_map, _ = get_cached_reference_maps()
 
-        # ✅ Fetch only face-registered IDs from SQL
-        from employees.models import Employee
-        face_registered_ids = set(Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True))
-
-        global_employees = list(profiles_col.find(query))
-        
-        # ✅ Filter only those with registered faces
-        global_employees = [e for e in global_employees if str(e.get("employeeId")) in face_registered_ids]
-
-        # ✅ Create SQL department map (Name -> ID)
-        from ..models import Department
-        sql_dept_map = {d.name: d.id for d in Department.objects.all()}
-
-        # ✅ Create department & designation lookup maps
-        dept_map = {
-            d.get('department_code'): d.get('department_name')
-            for d in departments_col.find() # Remove is_active filter
-        }
-        desig_map = {
-            d.get('Designation_code'): d.get('designation')
-            for d in designations_col.find({'is_active': True})
-        }
-
-        # ✅ Fetch all locally stored employees (optimized: exclude heavy face_encoding vector arrays)
-        local_employees = Employee.objects.all().values("employee_id", "is_active")
-
-        # Build a dictionary of {employee_id: {has_encoding, is_active}}
+        # ✅ Fetch all locally stored employees in a single query
+        from employees.models import Employee, Department
+        local_employees = list(Employee.objects.values("employee_id", "is_active", "current_face_encoding"))
+        face_registered_ids = {str(e["employee_id"]) for e in local_employees if e.get("current_face_encoding") is not None}
         local_employee_map = {
             str(emp["employee_id"]): {
                 "has_encoding": str(emp["employee_id"]) in face_registered_ids,
@@ -374,6 +341,14 @@ def get_all_employee_from_global(request):
             }
             for emp in local_employees
         }
+
+        global_employees = list(profiles_col.find(query))
+        
+        # ✅ Filter only those with registered faces
+        global_employees = [e for e in global_employees if str(e.get("employeeId")) in face_registered_ids]
+
+        # ✅ Create SQL department map (Name -> ID)
+        sql_dept_map = {d.name: d.id for d in Department.objects.all()}
 
         # ✅ Base URL for image serving
         base_url = request.build_absolute_uri('/')[:-1]
@@ -489,7 +464,7 @@ def _select_face_frames(images_list, lenient):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def preview_face_frames(request):
     """
     Given a batch of candidate photos (e.g. frames auto-sampled from a 5s recording), returns
@@ -602,7 +577,7 @@ def _register_employee_multi(request, images_list):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def register_employee(request):
     # ✅ Multi-photo path: if the frontend sends an `images` array (up to 3 angles),
     # handle it separately and leave the original single-`image` flow below untouched.
@@ -701,7 +676,7 @@ def register_employee(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def encode_employee_face(request, employee_id):
     try:
         mongo_uri = os.getenv("GLOBAL_DB_HOST")
@@ -757,6 +732,7 @@ def encode_employee_face(request, employee_id):
 
 
 @api_view(['GET'])
+@permission_classes([AllowAny])
 def serve_file(request, file_id):
     try:
         client = get_mongo_client()
@@ -779,7 +755,7 @@ def serve_file(request, file_id):
         raise Http404(f"File not found or invalid: {str(e)}")
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def export_employees_xls(request):
     """
     Export all employees with face recognition status, global profile status, 

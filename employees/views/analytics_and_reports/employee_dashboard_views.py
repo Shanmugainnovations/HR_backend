@@ -1,3 +1,4 @@
+from employees.permissions import HasRoleAndDataPermission
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -7,7 +8,7 @@ import datetime
 import pytz
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def today_status(request):
     try:
         employee_id = request.GET.get('employee_id')
