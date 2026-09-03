@@ -42,10 +42,10 @@ def today_status(request):
         yesterday = today - datetime.timedelta(days=1)
 
         client = get_mongo_client()
-        hr_db_name = os.environ.get('HR_DB_NAME', 'HR')
         global_db_name = os.environ.get('GLOBAL_DB_NAME', 'Global')
-        hr_db = client[hr_db_name]
+        hr_db_name = os.environ.get('HR_DB_NAME', 'Global')
         global_db = client[global_db_name]
+        hr_db = client[hr_db_name]
 
         # 1. Employee Profile Info & Human-Readable Labels
         emp_name = "Employee"
@@ -164,7 +164,9 @@ def today_status(request):
         start_today_utc = start_today_ist.astimezone(pytz.UTC).replace(tzinfo=None)
         end_today_utc = end_today_ist.astimezone(pytz.UTC).replace(tzinfo=None)
 
-        attendance_col = hr_db['employees_employeeattendance']
+        attendance_col = global_db['employees_employeeattendance']
+        if attendance_col.count_documents({}) == 0:
+            attendance_col = hr_db['employees_employeeattendance']
         # Try both string and integer formats for employee_id
         emp_match = {'$in': [emp_str, int(emp_str)]} if emp_str.isdigit() else emp_str
 
