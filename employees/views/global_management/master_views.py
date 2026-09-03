@@ -149,3 +149,70 @@ def addnew_designation(request):
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
+
+@api_view(['PUT', 'PATCH', 'POST'])
+@permission_classes([HasRoleAndDataPermission])
+def update_department(request, dept_code):
+    try:
+        col = _get_dept_col()
+        existing = col.find_one({"department_code": dept_code})
+        if not existing:
+            # Fallback check case-insensitively
+            existing = col.find_one({"department_code": {"$regex": f"^{re.escape(dept_code)}$", "$options": "i"}})
+            if not existing:
+                return JsonResponse({"error": f"Department with code {dept_code} not found"}, status=404)
+            dept_code = existing["department_code"]
+
+        update_fields = {}
+        if "department_name" in request.data:
+            update_fields["department_name"] = request.data["department_name"]
+        if "description" in request.data:
+            update_fields["description"] = request.data["description"]
+        if "email" in request.data:
+            update_fields["email"] = request.data["email"]
+        if "is_active" in request.data:
+            update_fields["is_active"] = bool(request.data["is_active"])
+
+        update_fields["lastmodified_date"] = datetime.now(IST).isoformat()
+
+        col.update_one({"department_code": dept_code}, {"$set": update_fields})
+        updated = col.find_one({"department_code": dept_code}, {"_id": 0})
+        return JsonResponse({"message": "Department updated successfully", "data": updated}, status=200)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+@api_view(['PUT', 'PATCH', 'POST'])
+@permission_classes([HasRoleAndDataPermission])
+def update_designation(request, desig_code):
+    try:
+        col = _get_desig_col()
+        existing = col.find_one({"$or": [
+            {"Designation_code": desig_code},
+            {"designation_code": desig_code},
+            {"Designation_code": {"$regex": f"^{re.escape(desig_code)}$", "$options": "i"}},
+            {"designation_code": {"$regex": f"^{re.escape(desig_code)}$", "$options": "i"}}
+        ]})
+        if not existing:
+            return JsonResponse({"error": f"Designation with code {desig_code} not found"}, status=404)
+
+        code_field = "Designation_code" if "Designation_code" in existing else "designation_code"
+        code_val = existing[code_field]
+
+        update_fields = {}
+        if "designation" in request.data:
+            update_fields["designation"] = request.data["designation"]
+        if "description" in request.data:
+            update_fields["description"] = request.data["description"]
+        if "is_active" in request.data:
+            update_fields["is_active"] = bool(request.data["is_active"])
+
+        update_fields["lastmodified_date"] = datetime.now(IST).isoformat()
+
+        col.update_one({code_field: code_val}, {"$set": update_fields})
+        updated = col.find_one({code_field: code_val}, {"_id": 0})
+        return JsonResponse({"message": "Designation updated successfully", "data": updated}, status=200)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+

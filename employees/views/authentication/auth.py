@@ -608,7 +608,7 @@ def get_global_departments(request):
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-@api_view(['POST'])
+@api_view(['POST', 'PATCH', 'PUT'])
 @permission_classes([AllowAny])
 def set_employee_password(request):
     """

@@ -50,6 +50,8 @@ from .global_management import (
     get_next_designation_code,
     addnew_department,
     addnew_designation,
+    update_department,
+    update_designation,
     get_todays_birthdays,
     check_employee_id,
     create_employee,
