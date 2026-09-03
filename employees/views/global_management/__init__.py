@@ -7,6 +7,8 @@ from .master_views import (
     get_next_designation_code,
     addnew_department,
     addnew_designation,
+    update_department,
+    update_designation,
 )
 from .birthdays import get_todays_birthdays
 from .profile_views import (
