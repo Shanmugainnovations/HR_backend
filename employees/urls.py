@@ -100,6 +100,7 @@ urlpatterns = [
     path('register-push-token/', register_push_token, name='register-push-token'),
     path('employee/notifications/active-popup/', get_active_popup_announcement, name='active-popup-announcement'),
     path('set-employee-password/', views.set_employee_password, name='set-employee-password'),
+    path('set_employee_password/', views.set_employee_password, name='set_employee_password'),
     path('data-entitlements/', views.get_data_entitlements, name='data-entitlements'),
     path('get_data_departments/', views.get_data_departments, name='get-data-departments'),
     path('get_data_designation/', views.get_data_designation, name='get-data-designation'),
