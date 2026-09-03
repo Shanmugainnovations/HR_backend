@@ -127,15 +127,38 @@ class LeaveTypeSerializer(serializers.ModelSerializer):
         model = LeaveType
         fields = '__all__'
 
+_DEPT_NAME_TO_CODE_CACHE = {}
+
+def get_cached_department_code(dept_name):
+    global _DEPT_NAME_TO_CODE_CACHE
+    if not _DEPT_NAME_TO_CODE_CACHE:
+        try:
+            from employees.views.common.utils import get_mongo_client
+            import os
+            client = get_mongo_client()
+            db = client[os.environ.get('GLOBAL_DB_NAME', 'Global')]
+            g_depts = list(db['backend_diagnostics_Departments'].find({}, {'department_name': 1, 'department_code': 1}))
+            _DEPT_NAME_TO_CODE_CACHE = {
+                d['department_name'].strip().lower(): d['department_code']
+                for d in g_depts if d.get('department_name') and d.get('department_code')
+            }
+        except Exception:
+            pass
+    return _DEPT_NAME_TO_CODE_CACHE.get((dept_name or '').strip().lower())
+
 class DepartmentSerializer(serializers.ModelSerializer):
     shifts = serializers.SerializerMethodField()
+    department_code = serializers.SerializerMethodField()
     shift_ids = serializers.PrimaryKeyRelatedField(
         queryset=Shift.objects.all(), source='shifts', many=True, write_only=True, required=False
     )
 
     class Meta:
         model = Department
-        fields = ['id', 'name', 'shifts', 'shift_ids'] + AUDIT_FIELDS
+        fields = ['id', 'name', 'department_code', 'shifts', 'shift_ids'] + AUDIT_FIELDS
+
+    def get_department_code(self, obj):
+        return get_cached_department_code(getattr(obj, 'name', ''))
 
     def get_shifts(self, obj):
         try:
