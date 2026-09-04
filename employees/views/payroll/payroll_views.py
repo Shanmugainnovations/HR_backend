@@ -36,9 +36,12 @@ def get_mongo_db():
     return client[db_name]
 
 
-def calculate_attendance_metrics_from_roster(target_month, employee_ids=None):
+def calculate_attendance_metrics_from_roster(target_month, employee_ids=None, treat_sp_as_present=True):
     """
-    Computes exact Present Days and LOP (Absent) Days matching the Duty Roster Attendance Report.
+    Computes exact Present Days, LOP (Absent) Days, and Single Punch (SP) Days
+    matching the Duty Roster Attendance Report.
+    Only true unapproved missed shifts count as LOP.
+    Leaves (EL, CL, SL, etc.) and Week Offs/Holidays/Sundays count as Paid days (Present).
     """
     try:
         parts = target_month.split('-')
@@ -62,28 +65,43 @@ def calculate_attendance_metrics_from_roster(target_month, employee_ids=None):
 
     total_days_in_month = len(report_dates)
 
-    # 1. Fetch All Shifts & Shift Schedules
-    from employees.models import Shift, EmployeeShiftSchedule, EmployeeAttendance, LeaveRequest
+    db = get_mongo_db()
+
+    # 1. Fetch All Shifts & Shift Schedules from MongoDB Global directly
+    from employees.models import Shift, LeaveRequest
     all_shifts = {s.id: s for s in Shift.objects.all()}
 
-    sched_filter = {'date__gte': start_date, 'date__lte': end_date}
+    start_dt_sch = datetime.combine(start_date, datetime.min.time())
+    end_dt_sch = datetime.combine(end_date, datetime.max.time())
+    sch_query = {
+        'date': {'$gte': start_dt_sch, '$lte': end_dt_sch}
+    }
     if employee_ids:
-        sched_filter['employee_id__in'] = [str(eid) for eid in employee_ids]
+        sch_query['employee_id'] = {'$in': [str(eid) for eid in employee_ids]}
 
-    schedules = EmployeeShiftSchedule.objects.filter(**sched_filter)
+    schedules_raw = list(db['employees_employeeshiftschedule'].find(
+        sch_query, 
+        {'_id': 0, 'employee_id': 1, 'shift_id': 1, 'date': 1}
+    ))
     schedule_map = {}
-    for sch in schedules:
-        schedule_map[(str(sch.employee_id), sch.date)] = all_shifts.get(sch.shift_id)
+    for sch in schedules_raw:
+        sch_date = sch['date'].date() if isinstance(sch.get('date'), datetime) else sch.get('date')
+        schedule_map[(str(sch.get('employee_id', '')), sch_date)] = all_shifts.get(sch.get('shift_id'))
 
-    # 2. Fetch Attendance Punches
+    # 2. Fetch Attendance Punches from MongoDB Global directly
     start_dt = datetime.combine(start_date - timedelta(days=1), datetime.min.time())
     end_dt = datetime.combine(end_date + timedelta(days=1), datetime.max.time())
 
-    att_filter = {'attendence_time__range': (start_dt, end_dt)}
+    att_query = {
+        'attendence_time': {'$gte': start_dt, '$lte': end_dt}
+    }
     if employee_ids:
-        att_filter['employee_id__in'] = [str(eid) for eid in employee_ids]
+        att_query['employee_id'] = {'$in': [str(eid) for eid in employee_ids]}
 
-    attendance_records = EmployeeAttendance.objects.filter(**att_filter).order_by('employee_id', 'attendence_time')
+    attendance_records = list(db['employees_employeeattendance'].find(
+        att_query,
+        {'_id': 0, 'employee_id': 1, 'attendence_time': 1, 'attendence_type': 1}
+    ).sort([('employee_id', 1), ('attendence_time', 1)]))
 
     # Process attendance into date-assigned punches matching Roster Report
     attendance_map = {}
@@ -93,20 +111,21 @@ def calculate_attendance_metrics_from_roster(target_month, employee_ids=None):
     noon_time = time(12, 0)
 
     for att in attendance_records:
-        if not att.attendence_time:
+        att_time = att.get('attendence_time')
+        if not att_time:
             continue
-        ist_time = to_ist(att.attendence_time)
+        ist_time = to_ist(att_time)
         if not ist_time:
             continue
         punch_date = ist_time.date()
         
-        eid = str(att.employee_id)
+        eid = str(att.get('employee_id', ''))
         if current_emp_id != eid:
             current_emp_id = eid
             current_shift_date = None
             last_in_time = None
             
-        punch_type = att.attendence_type
+        punch_type = att.get('attendence_type')
         assigned_date = punch_date
         
         if punch_type == 'IN':
@@ -147,8 +166,7 @@ def calculate_attendance_metrics_from_roster(target_month, employee_ids=None):
     except Exception as e:
         logger.warning(f"Error querying leaves for payroll: {e}")
 
-    # 4. Evaluate each employee per day exactly as in Roster Attendance Report
-    # Collect all unique employee IDs from schedule, attendance, or passed list
+    # 4. Evaluate each employee per day
     all_emp_ids = set()
     if employee_ids:
         all_emp_ids.update([str(e) for e in employee_ids])
@@ -160,10 +178,11 @@ def calculate_attendance_metrics_from_roster(target_month, employee_ids=None):
     metrics = {}
 
     for eid in all_emp_ids:
-        present_count = 0
-        lop_count = 0
+        present_count = 0.0
+        lop_count = 0.0
         off_count = 0
         leave_count = 0
+        sp_count = 0
 
         for current_date in report_dates:
             shift_obj = schedule_map.get((eid, current_date))
@@ -175,31 +194,44 @@ def calculate_attendance_metrics_from_roster(target_month, employee_ids=None):
             if shift_obj:
                 is_leave_shift = (
                     (shift_obj.start_time.strftime('%H:%M') == '00:00' and shift_obj.end_time.strftime('%H:%M') == '00:00')
-                    or shift_name in ['OFF', 'EL', 'CL', 'SL', 'ML', 'COFF', 'LEAVE', 'WEEK OFF', 'PH', 'COL']
+                    or shift_name in ['OFF', 'EL', 'CL', 'SL', 'ML', 'COFF', 'LEAVE', 'WEEK OFF', 'PH', 'COL', 'PL', 'OD']
                 )
 
-            if punches:
-                # Any valid punch counts as Present in duty roster
-                present_count += 1
-            elif is_approved_leave:
-                leave_count += 1
-            elif is_leave_shift:
+            in_punches = [p for p in punches if p.get('type') == 'IN']
+            out_punches = [p for p in punches if p.get('type') == 'OUT']
+
+            if current_date > date.today():
+                # Future date in the current month: not an absent day!
                 off_count += 1
-            elif not shift_obj:
-                # No shift assigned on this date: check if Sunday
-                if current_date.weekday() == 6:
-                    off_count += 1
+                present_count += 1
+            elif in_punches and out_punches:
+                # Both IN and OUT punches -> Full Present
+                present_count += 1
+            elif in_punches or out_punches:
+                # Single punch
+                sp_count += 1
+                if treat_sp_as_present:
+                    present_count += 1
                 else:
-                    # Off day or unassigned
-                    off_count += 1
+                    present_count += 0.5
+                    lop_count += 0.5
+            elif is_approved_leave or is_leave_shift:
+                # Approved leave shift or formal leave -> Paid day (0 LOP)
+                leave_count += 1
+                present_count += 1
+            elif not shift_obj or current_date.weekday() == 6:
+                # Week Off / Sunday / Unassigned -> Paid day (0 LOP)
+                off_count += 1
+                present_count += 1
             else:
-                # Shift was assigned but no punch and not an approved leave -> LOP / Absent
+                # Past/today shift was assigned, but employee has no punches and no approved leave -> True Absent / LOP
                 lop_count += 1
 
         metrics[eid] = {
             'total_month_days': total_days_in_month,
             'present_days': present_count,
             'lop_days': lop_count,
+            'sp_days': sp_count,
             'off_days': off_count,
             'leave_days': leave_count,
         }
@@ -270,7 +302,8 @@ def monthly_payroll_view(request):
         
         # Calculate attendance metrics matching Duty Roster
         all_emp_ids = [str(p.get('employeeId', '')).strip() for p in all_profiles if p.get('employeeId')]
-        attendance_map, total_month_days = calculate_attendance_metrics_from_roster(target_month, all_emp_ids)
+        treat_sp = str(request.GET.get('treat_sp_as_present', request.data.get('treat_sp_as_present', 'true'))).lower() in ['true', '1', 'yes']
+        attendance_map, total_month_days = calculate_attendance_metrics_from_roster(target_month, all_emp_ids, treat_sp_as_present=treat_sp)
         
         total_gross = 0.0
         total_net = 0.0
@@ -366,6 +399,7 @@ def monthly_payroll_view(request):
                 'totalMonthDays': total_month_days,
                 'presentDays': present_days,
                 'lopDays': lop_days,
+                'spDays': att_metric.get('sp_days', 0),
                 
                 # Earnings
                 'basicSalary': basic,
@@ -499,6 +533,7 @@ def update_payroll_entry(request):
             
             'presentDays': float(data.get('presentDays', existing.get('presentDays', 0)) or 0),
             'lopDays': float(data.get('lopDays', existing.get('lopDays', 0)) or 0),
+            'spDays': int(data.get('spDays', existing.get('spDays', 0)) or 0),
             'lopDeduction': round(lop_ded, 2),
             'lateDeduction': round(late_ded, 2),
             'pf': round(pf, 2),

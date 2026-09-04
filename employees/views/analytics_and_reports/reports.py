@@ -64,12 +64,17 @@ def roster_attendance_report(request):
         dept_map, desig_map, all_shifts = get_cached_reference_maps()
         profiles_col = db['backend_diagnostics_profile']
 
-        # Fetch profiles based on department filter
+        # Fetch profiles based on department filter and optional employee_id
         query = dept_ctx['mongo_query']
+        target_emp_id = request.query_params.get('employee_id')
+        if target_emp_id:
+            query['employeeId'] = str(target_emp_id).strip()
         
         # Fetch all employees from SQL
         from employees.models import Employee
         active_employees = Employee.objects.all()
+        if target_emp_id:
+            active_employees = active_employees.filter(employee_id=str(target_emp_id).strip())
         active_employee_ids = set(active_employees.values_list('employee_id', flat=True))
 
         profiles = list(profiles_col.find(query))
@@ -100,6 +105,8 @@ def roster_attendance_report(request):
         if not dept_ctx['is_filtered'] or "Unassigned" in dept_ctx['target_terms']:
             for emp in active_employees:
                 emp_id_str = str(emp.employee_id)
+                if target_emp_id and emp_id_str != str(target_emp_id).strip():
+                    continue
                 if emp_id_str not in employees_data:
                     employees_data[emp_id_str] = {
                         "name": emp.name,

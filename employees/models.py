@@ -1,8 +1,26 @@
+import json
 from django.db import models
+from django.db.models.fields.json import JSONField as DjangoJSONField
 from django.utils import timezone
 from django.contrib.auth.models import User
 from django.contrib.auth.hashers import make_password
 from bson import ObjectId
+
+# Safe patch for JSONField to handle BSON dict/list returned by MongoDB/Djongo
+_original_from_db_value = DjangoJSONField.from_db_value
+def _safe_json_from_db_value(self, value, expression, connection):
+    if value is None:
+        return value
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, (str, bytes, bytearray)):
+        try:
+            return json.loads(value, cls=self.decoder)
+        except Exception:
+            return value
+    return value
+DjangoJSONField.from_db_value = _safe_json_from_db_value
+
 
 class ObjectIdField(models.Field):
     """ Custom field to store ObjectId """
