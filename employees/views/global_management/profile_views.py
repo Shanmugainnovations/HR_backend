@@ -185,16 +185,15 @@ def check_employee_id(request):
     if not employee_id:
         return Response({'exists': False}, status=status.HTTP_200_OK)
 
-    exists = Profile.objects.filter(employeeId=employee_id).exists()
-    if not exists:
-        try:
-            client = get_mongo_client()
-            db_name = os.environ.get('GLOBAL_DB_NAME', 'Global')
-            db = client[db_name]
-            doc = db['backend_diagnostics_profile'].find_one({'employeeId': employee_id})
-            exists = doc is not None
-        except Exception as e:
-            logger.warning(f"Mongo check_employee_id error: {e}")
+    try:
+        client = get_mongo_client()
+        db_name = os.environ.get('GLOBAL_DB_NAME', 'Global')
+        db = client[db_name]
+        doc = db['backend_diagnostics_profile'].find_one({'employeeId': str(employee_id)})
+        exists = doc is not None
+    except Exception as e:
+        logger.warning(f"Mongo check_employee_id error: {e}")
+        exists = Profile.objects.filter(employeeId=str(employee_id)).exists()
 
     return Response({'exists': exists}, status=status.HTTP_200_OK)
 
@@ -224,9 +223,15 @@ def create_employee(request):
             except ValidationError:
                 return Response({'error': "Invalid email format"}, status=status.HTTP_400_BAD_REQUEST)
 
-        existing_profile = Profile.objects.filter(employeeId=data.get('employeeId')).first()
+        target_emp_id = str(data.get('employeeId', '')).strip()
+
+        _client = get_mongo_client()
+        _db = _client[os.environ.get('GLOBAL_DB_NAME', 'Global')]
+        _profiles_col = _db['backend_diagnostics_profile']
+
+        existing_profile = _profiles_col.find_one({'employeeId': target_emp_id})
         if existing_profile:
-            return Response({'error': f"Employee ID '{data.get('employeeId')}' already exists."}, status=status.HTTP_409_CONFLICT)
+            return Response({'error': f"Employee ID '{target_emp_id}' already exists."}, status=status.HTTP_409_CONFLICT)
 
         now_ist = datetime.utcnow()
 
@@ -275,7 +280,6 @@ def create_employee(request):
         fnf_status = {'remarks': data.get('fnf_remarks') or ''}
 
         profile_doc = {
-            '_id': data.get('employeeId'),
             'employeeId': data.get('employeeId'),
             'employeeName': data.get('employeeName') or '',
             'fatherName': data.get('fatherName') or '',
@@ -312,14 +316,16 @@ def create_employee(request):
             'lastmodified_date': now_ist,
         }
 
-        _client = get_mongo_client()
-        _db = _client[os.environ.get('GLOBAL_DB_NAME', 'Global')]
-        _profiles_col = _db['backend_diagnostics_profile']
         _profiles_col.insert_one(profile_doc)
 
-        profile = Profile.objects.get(employeeId=data.get('employeeId'))
-        serializer = ProfileSerializer(profile)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        inserted_doc = _profiles_col.find_one({'employeeId': target_emp_id}, {'_id': 0})
+        sanitized = _sanitize_mongo_doc(inserted_doc or profile_doc)
+        return Response({
+            'success': True,
+            'message': 'Employee profile created successfully',
+            'data': sanitized,
+            **sanitized
+        }, status=status.HTTP_201_CREATED)
 
     except Exception as e:
         logger.error(f"Error creating employee profile: {str(e)}")
