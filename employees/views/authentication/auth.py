@@ -683,11 +683,25 @@ def get_user_profile(request, employee_id):
                 if not role:
                     role = g_user.get('primaryRole') or ''
 
+        from employees.models import Register
+        reg_user = Register.objects.filter(employee_id=emp_str).first()
+        if not reg_user and name:
+            reg_user = Register.objects.filter(name=name).first()
+
+        assigned_depts = getattr(reg_user, 'assigned_departments', '') or (reg_user.department if reg_user else dept) or ''
+        assigned_names = resolve_department_names(assigned_depts)
+        home_names = resolve_department_names(reg_user.department if reg_user else dept)
+
+        final_role = reg_user.role if reg_user and reg_user.role else role
+
         return Response({
             "employee_id": emp_str,
-            "name": name,
-            "role": role,
-            "department": dept
+            "name": (reg_user.name if reg_user and reg_user.name else name),
+            "role": final_role,
+            "department": assigned_depts if 'HOD' in str(final_role) else (reg_user.department if reg_user else dept),
+            "department_name": assigned_names if 'HOD' in str(final_role) else home_names,
+            "assigned_departments": assigned_depts,
+            "assigned_department_names": assigned_names,
         }, status=200)
     except Exception as e:
         return Response({"error": str(e)}, status=500)

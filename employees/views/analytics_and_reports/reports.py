@@ -60,8 +60,9 @@ def roster_attendance_report(request):
         client = MongoClient(mongo_uri)
         db = client[db_name]
 
-        from employees.views.common.utils import get_cached_reference_maps
+        from employees.views.common.utils import get_cached_reference_maps, get_inactive_employee_ids
         dept_map, desig_map, all_shifts = get_cached_reference_maps()
+        inactive_ids = get_inactive_employee_ids()
         profiles_col = db['backend_diagnostics_profile']
 
         # Fetch profiles based on department filter and optional employee_id
@@ -70,12 +71,12 @@ def roster_attendance_report(request):
         if target_emp_id:
             query['employeeId'] = str(target_emp_id).strip()
         
-        # Fetch all employees from SQL
+        # Fetch all employees from SQL (excluding inactive)
         from employees.models import Employee
         active_employees = Employee.objects.all()
         if target_emp_id:
             active_employees = active_employees.filter(employee_id=str(target_emp_id).strip())
-        active_employee_ids = set(active_employees.values_list('employee_id', flat=True))
+        active_employee_ids = {str(eid) for eid in active_employees.values_list('employee_id', flat=True) if str(eid) not in inactive_ids}
 
         profiles = list(profiles_col.find(query))
 
@@ -83,8 +84,8 @@ def roster_attendance_report(request):
         for p in profiles:
             emp_id = str(p.get("employeeId"))
             
-            # Skip if not in SQL DB
-            if emp_id not in active_employee_ids:
+            # Skip if inactive or not in SQL DB
+            if emp_id in inactive_ids or emp_id not in active_employee_ids:
                 continue
 
             dept_code = p.get("department") # This is the ID/Code

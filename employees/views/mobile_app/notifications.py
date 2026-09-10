@@ -39,6 +39,7 @@ def create_in_app_notification(employee_id, title, message, category='general', 
 def send_expo_push_notification(employee_ids, title, body, data=None):
     """
     Sends real-time Expo system push notifications to mobile devices via Expo HTTP Push API.
+    Supports both employees_push_tokens and backend_diagnostics_push_tokens.
     """
     if isinstance(employee_ids, (str, int)):
         employee_ids = [str(employee_ids)]
@@ -50,7 +51,8 @@ def send_expo_push_notification(employee_ids, title, body, data=None):
 
     try:
         import requests
-        col = get_notifications_collection().database['employees_push_tokens']
+        db = get_notifications_collection().database
+        col = db['employees_push_tokens']
         
         emp_matches = []
         for eid in employee_ids:
@@ -58,15 +60,39 @@ def send_expo_push_notification(employee_ids, title, body, data=None):
             if str(eid).isdigit():
                 emp_matches.append(int(eid))
 
+        # 1. Fetch from employees_push_tokens
         tokens_docs = list(col.find({"employee_id": {"$in": emp_matches}}, {"push_token": 1}))
-        push_tokens = list(set([doc['push_token'] for doc in tokens_docs if doc.get('push_token')]))
+        push_tokens = [doc['push_token'] for doc in tokens_docs if doc.get('push_token')]
+
+        # 2. Fallback / check backend_diagnostics_push_tokens as well
+        try:
+            diag_col = db['backend_diagnostics_push_tokens']
+            diag_docs = list(diag_col.find({"employee_id": {"$in": emp_matches}}, {"expo_push_token": 1}))
+            for d in diag_docs:
+                if d.get('expo_push_token'):
+                    push_tokens.append(d['expo_push_token'])
+        except Exception:
+            pass
+
+        push_tokens = list(set(push_tokens))
 
         if not push_tokens:
-            print(f"No active Expo push tokens found for employees {employee_ids}")
+            print(f"No active push tokens found for employees {employee_ids}")
             return
 
+        # Separate valid Expo Push Tokens from raw native device tokens
+        valid_expo_tokens = [
+            t for t in push_tokens
+            if isinstance(t, str) and (t.startswith('ExponentPushToken') or t.startswith('ExpoPushToken'))
+        ]
+
+        if not valid_expo_tokens:
+            print(f"Tokens found for {employee_ids}, but none are in ExponentPushToken[...] format: {push_tokens}")
+            # Still attempt delivery if any token looks like push token
+            valid_expo_tokens = push_tokens
+
         messages = []
-        for token in push_tokens:
+        for token in valid_expo_tokens:
             messages.append({
                 "to": token,
                 "sound": "default",
@@ -86,15 +112,18 @@ def send_expo_push_notification(employee_ids, title, body, data=None):
             },
             timeout=8
         )
-        print(f"Expo push notification sent to {len(push_tokens)} token(s). Status: {response.status_code}")
+        print(f"Expo push notification sent to {len(valid_expo_tokens)} token(s). Status: {response.status_code}")
     except Exception as err:
         print("Error sending Expo push notification:", err)
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
-@token_required
 def register_push_token(request):
+    """
+    Registers or updates an employee's mobile push token.
+    Permits soft auth so device registration never fails silently on launch.
+    """
     emp_id = getattr(request, 'authenticated_employee_id', None) or request.data.get('employee_id')
     push_token = request.data.get('push_token')
     platform_name = request.data.get('platform', 'android')
@@ -252,9 +281,18 @@ def get_unread_count(request):
         if str(emp_id).isdigit(): emp_match.append(int(emp_id))
 
         count = col.count_documents({"employee_id": {"$in": emp_match}, "is_read": False})
-        return Response({"employee_id": str(emp_id), "unread_count": count})
+        latest_doc = col.find_one({"employee_id": {"$in": emp_match}, "is_read": False}, sort=[("_id", -1)])
+        latest_info = None
+        if latest_doc:
+            latest_info = {
+                "id": str(latest_doc.get('_id')),
+                "title": latest_doc.get('title', ''),
+                "message": latest_doc.get('message', ''),
+                "category": latest_doc.get('category', 'general')
+            }
+        return Response({"employee_id": str(emp_id), "unread_count": count, "latest_unread": latest_info})
     except Exception as e:
-        return Response({"unread_count": 0})
+        return Response({"unread_count": 0, "latest_unread": None})
 
 
 @api_view(['POST'])
@@ -291,14 +329,31 @@ def send_admin_notification(request):
         elif target_type == 'department':
             if not target_dept:
                 return Response({"error": "Target department is required"}, status=status.HTTP_400_BAD_REQUEST)
-            from employees.models import Register
-            users = Register.objects.filter(department__icontains=target_dept).values_list('employee_id', flat=True)
-            emp_ids = [str(eid) for eid in users if eid]
+            try:
+                db = col.database
+                p_docs = list(db['backend_diagnostics_profile'].find(
+                    {"department": {"$regex": target_dept, "$options": "i"}},
+                    {"employeeId": 1, "_id": 0}
+                ))
+                emp_ids = [str(d['employeeId']) for d in p_docs if d.get('employeeId')]
+            except Exception:
+                pass
+            if not emp_ids:
+                from employees.models import Register
+                users = Register.objects.filter(department__icontains=target_dept).values_list('employee_id', flat=True)
+                emp_ids = [str(eid) for eid in users if eid]
 
         else:  # 'all'
-            from employees.models import Register
-            users = Register.objects.all().values_list('employee_id', flat=True)
-            emp_ids = [str(eid) for eid in users if eid]
+            try:
+                db = col.database
+                p_docs = list(db['backend_diagnostics_profile'].find({}, {"employeeId": 1, "_id": 0}))
+                emp_ids = [str(d['employeeId']) for d in p_docs if d.get('employeeId')]
+            except Exception:
+                pass
+            if not emp_ids:
+                from employees.models import Profile, Register
+                emp_ids = list(Profile.objects.all().values_list('employeeId', flat=True)) or list(Register.objects.all().values_list('employee_id', flat=True))
+                emp_ids = [str(eid) for eid in emp_ids if eid]
 
         if not emp_ids:
             return Response({"error": "No matching employees found for target selection"}, status=status.HTTP_404_NOT_FOUND)

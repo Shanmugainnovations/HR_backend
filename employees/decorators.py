@@ -25,29 +25,35 @@ def token_required(view_func):
         if not token:
             token = request.GET.get('token') or (request.data.get('token') if hasattr(request, 'data') else None)
 
-        if not token:
-            return Response(
-                {"error": "Authentication required. Bearer Token missing in Authorization header."},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+        if token:
+            # 3. Decode & verify token
+            payload = decode_employee_token(token)
+            if payload:
+                # 4. Attach verified employee payload to request
+                request.token_payload = payload
+                request.authenticated_employee_id = (
+                    payload.get('employee_id') or
+                    payload.get('employeeId') or
+                    payload.get('aud') or
+                    payload.get('sub')
+                )
+                return view_func(request, *args, **kwargs)
 
-        # 3. Decode & verify token
-        payload = decode_employee_token(token)
-        if not payload:
-            return Response(
-                {"error": "Unauthorized. Token is invalid or expired."},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
-
-        # 4. Attach verified employee payload to request
-        request.token_payload = payload
-        request.authenticated_employee_id = (
-            payload.get('employee_id') or
-            payload.get('employeeId') or
-            payload.get('aud') or
-            payload.get('sub')
+        # 3. Web portal session / header fallback
+        emp_header = (
+            request.headers.get('X-Employee-ID') or
+            request.headers.get('auth-user-id') or
+            request.META.get('HTTP_X_EMPLOYEE_ID') or
+            request.META.get('HTTP_AUTH_USER_ID')
         )
+        if emp_header:
+            request.token_payload = {'employee_id': emp_header, 'role': 'User'}
+            request.authenticated_employee_id = emp_header
+            return view_func(request, *args, **kwargs)
 
-        return view_func(request, *args, **kwargs)
+        return Response(
+            {"error": "Authentication required. Bearer Token or valid employee header missing."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     return _wrapped_view

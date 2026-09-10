@@ -70,6 +70,8 @@ urlpatterns = [
     path('leaves/pending/', views.pending_leaves, name='pending_leaves'),
     path('leaves/history/', views.leave_history, name='leave_history'),
     path('leaves/<int:leave_id>/status/', views.update_leave_status, name='update_leave_status'),
+    path('leaves/balances/', views.get_leave_balances, name='leave_balances'),
+    path('employee/leave-balances/', views.get_leave_balances, name='employee_leave_balances'),
     path('leave-types/', views.leave_type_list_create, name='leave-type-list'),
     path('leave-types/<int:pk>/', views.leave_type_detail, name='leave-type-detail'),
 
@@ -112,6 +114,8 @@ urlpatterns = [
     path('update_department/<str:dept_code>/', views.update_department, name='update-department'),
     path('update_designation/<str:desig_code>/', views.update_designation, name='update-designation'),
     path('employees_birthdays_today/', views.get_todays_birthdays, name='employees-birthdays-today'),
+    path('employees_birthdays_monthly/', views.get_monthly_birthdays, name='employees-birthdays-monthly'),
+    path('export_birthdays_csv/', views.export_birthdays_csv, name='export-birthdays-csv'),
     path('check_employee_id/', views.check_employee_id, name='check-employee-id'),
     path('create_employee/', views.create_employee, name='create-employee'),
 
@@ -140,11 +144,29 @@ urlpatterns = [
     path('payroll/monthly/', views.monthly_payroll_view, name='monthly-payroll'),
     path('payroll/update-entry/', views.update_payroll_entry, name='update-payroll-entry'),
     path('payroll/approve/', views.approve_monthly_payroll, name='approve-monthly-payroll'),
+    path('payroll/department-action/', views.department_payroll_action, name='department-payroll-action'),
+    path('payroll/audit-trail/', views.payroll_audit_trail_view, name='payroll-audit-trail'),
     path('payroll/export-bank-sheet/', views.export_bank_transfer_sheet, name='export-bank-sheet'),
     path('payroll/export-pf-ecr/', views.export_pf_ecr, name='export-pf-ecr'),
     path('payroll/export-esi-return/', views.export_esi_return, name='export-esi-return'),
     path('payroll/payslip-pdf/<str:employee_id>/', views.download_payslip_html, name='download-payslip-html'),
     path('payroll/employee-payslips/<str:employee_id>/', views.employee_payslip_history, name='employee-payslip-history'),
+    path('payroll/late-hours-deductions/', views.get_late_hours_deductions_report, name='payroll-late-hours-deductions'),
+    path('payroll/late-hours-deductions/employee-events/', views.get_employee_late_events_breakdown, name='payroll-employee-late-events'),
+    path('payroll/permissions/apply/', views.apply_employee_permission, name='payroll-apply-permission'),
+    path('payroll/permissions/revoke/', views.revoke_employee_permission, name='payroll-revoke-permission'),
+    path('payroll/permissions/employee-month/', views.get_employee_monthly_permissions, name='payroll-employee-permissions'),
+    path('payroll/late-hours-deductions/manual-deduction/', views.manual_deduction_action, name='payroll-manual-deduction'),
+
+    # Employee Permission Requests & Approvals (Web + Mobile)
+    path('permissions/apply/', views.submit_permission_request, name='permission-apply'),
+    path('permissions/my-requests/', views.get_my_permission_requests, name='permission-my-requests'),
+    path('permissions/pending/', views.get_pending_permission_requests, name='permission-pending'),
+    path('permissions/review/', views.review_permission_request, name='permission-review'),
+    path('mobile/permissions/apply/', views.submit_permission_request, name='mobile-permission-apply'),
+    path('mobile/permissions/my-requests/', views.get_my_permission_requests, name='mobile-my-permissions'),
+    path('mobile/permissions/pending/', views.get_pending_permission_requests, name='mobile-pending-permissions'),
+    path('mobile/permissions/review/', views.review_permission_request, name='mobile-review-permission'),
 ]
 
 

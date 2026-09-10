@@ -21,6 +21,12 @@ from .profile import (
     serve_employee_profile_photo,
     change_employee_password
 )
+from .permissions import (
+    submit_permission_request,
+    get_my_permission_requests,
+    get_pending_permission_requests,
+    review_permission_request
+)
 
 __all__ = [
     'today_status',
@@ -39,7 +45,11 @@ __all__ = [
     'send_admin_notification',
     'get_full_employee_profile',
     'serve_employee_profile_photo',
-    'change_employee_password'
+    'change_employee_password',
+    'submit_permission_request',
+    'get_my_permission_requests',
+    'get_pending_permission_requests',
+    'review_permission_request'
 ]
 
 

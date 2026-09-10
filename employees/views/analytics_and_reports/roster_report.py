@@ -60,9 +60,11 @@ def export_roster_csv(request):
 
         query = dept_ctx['mongo_query']
         
-        # Fetch only employees with face registered from SQL
+        # Fetch only employees with face registered from SQL (excluding inactive)
         from employees.models import Employee
-        face_registered_ids = set(Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True))
+        from employees.views.common.utils import get_inactive_employee_ids
+        inactive_ids = get_inactive_employee_ids()
+        face_registered_ids = {str(eid) for eid in Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True) if str(eid) not in inactive_ids}
 
         profiles = list(profiles_col.find(query))
 
@@ -70,8 +72,8 @@ def export_roster_csv(request):
         for p in profiles:
             emp_id = str(p.get("employeeId"))
             
-            # Skip if not face registered
-            if emp_id not in face_registered_ids:
+            # Skip if inactive or not face registered
+            if emp_id in inactive_ids or emp_id not in face_registered_ids:
                 continue
 
             dept_code = p.get("department") # This is the ID/Code

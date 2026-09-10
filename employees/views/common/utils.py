@@ -227,3 +227,115 @@ def get_cached_reference_maps(force_refresh=False):
     return dept_map, desig_map, shifts_map
 
 
+def get_inactive_employee_ids():
+    """
+    Returns a set of employee IDs (strings) that are marked as inactive/disabled
+    across backend_diagnostics_user, employees_employee, and employee profiles in Global and HR databases.
+    """
+    inactive_ids = set()
+    client = get_mongo_client()
+    if client:
+        try:
+            global_db_name = os.environ.get("GLOBAL_DB_NAME", "Global")
+            hr_db_name = os.environ.get("GLOBAL_DB_NAME_HR", "HR")
+            
+            # 1. Global db checks
+            db_global = client[global_db_name]
+            if 'backend_diagnostics_user' in db_global.list_collection_names():
+                for d in db_global['backend_diagnostics_user'].find({'is_active': False}, {'employeeId': 1, 'employee_id': 1, '_id': 0}):
+                    eid = str(d.get('employeeId') or d.get('employee_id') or '').strip()
+                    if eid:
+                        inactive_ids.add(eid)
+
+            if 'employees_employee' in db_global.list_collection_names():
+                for d in db_global['employees_employee'].find({'is_active': False}, {'employee_id': 1, '_id': 0}):
+                    eid = str(d.get('employee_id') or '').strip()
+                    if eid:
+                        inactive_ids.add(eid)
+
+            for prof_col_name in ['backend_diagnostics_employee_profile', 'backend_diagnostics_profile']:
+                if prof_col_name in db_global.list_collection_names():
+                    for d in db_global[prof_col_name].find({
+                        '$or': [
+                            {'is_active': False},
+                            {'status': {'$in': ['Inactive', 'inactive', 'Disabled', 'disabled', 'Resigned', 'resigned', 'Left', 'left']}}
+                        ]
+                    }, {'employeeId': 1, '_id': 0}):
+                        eid = str(d.get('employeeId') or '').strip()
+                        if eid:
+                            inactive_ids.add(eid)
+
+            # 2. HR db checks
+            if hr_db_name in client.list_database_names():
+                db_hr = client[hr_db_name]
+                if 'employees_employee' in db_hr.list_collection_names():
+                    for d in db_hr['employees_employee'].find({'is_active': False}, {'employee_id': 1, '_id': 0}):
+                        eid = str(d.get('employee_id') or '').strip()
+                        if eid:
+                            inactive_ids.add(eid)
+        except Exception:
+            pass
+    return inactive_ids
+
+
+def get_request_user_hod_departments(request):
+    """
+    Identifies if the requester is an HOD, and returns:
+    (is_hod, list_of_assigned_department_names)
+    If Admin, HR, or non-HOD, returns (False, []).
+    """
+    from employees.models import Register
+    from django.db.models import Q
+
+    auth_user_id = (
+        request.headers.get('auth-user-id') or
+        request.headers.get('X-Employee-ID') or
+        request.headers.get('auth_user_id') or
+        request.GET.get('auth_user_id') or
+        request.GET.get('userId') or
+        request.GET.get('employee_id') or
+        (request.data.get('userId') if hasattr(request, 'data') and isinstance(request.data, dict) else None) or
+        getattr(request.user, 'employee_id', None) or
+        getattr(request.user, 'username', None)
+    )
+
+    # Fallback to decode JWT token if header not explicitly passed
+    if not auth_user_id:
+        auth_header = request.headers.get('Authorization') or request.META.get('HTTP_AUTHORIZATION')
+        if auth_header:
+            from employees.token_utils import decode_employee_token
+            payload = decode_employee_token(auth_header)
+            if payload and payload.get('employee_id'):
+                auth_user_id = payload['employee_id']
+
+    if not auth_user_id:
+        return False, []
+
+    user = Register.objects.filter(
+        Q(employee_id=str(auth_user_id).strip()) | Q(name=str(auth_user_id).strip())
+    ).first()
+    if not user:
+        return False, []
+
+    role = str(user.role or '').strip()
+    is_hod = 'HOD' in role.upper()
+    if not is_hod:
+        return False, []
+
+    assigned = getattr(user, 'assigned_departments', '') or user.department or ''
+    if not assigned or str(assigned).strip() in ['Unassigned', '', 'None']:
+        return True, []
+
+    resolved = resolve_department_filter(assigned)
+    dept_map, _, _ = get_cached_reference_maps()
+
+    names = set()
+    for term in resolved.get('target_terms', []):
+        if term in dept_map:
+            names.add(dept_map[term])
+        elif not term.upper().startswith('DEPT'):
+            names.add(term)
+
+    return True, sorted(list(names))
+
+

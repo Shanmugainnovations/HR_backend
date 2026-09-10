@@ -381,8 +381,9 @@ def attendance_report_with_employee_details(request):
         sql_dept_map = {d.name: d.id for d in Department.objects.all()}
 
         # ---- Cached Lookup Maps (Fast in-memory) ----
-        from employees.views.common.utils import get_cached_reference_maps
+        from employees.views.common.utils import get_cached_reference_maps, get_inactive_employee_ids
         dept_map, desig_map, _ = get_cached_reference_maps()
+        inactive_ids = get_inactive_employee_ids()
 
         # ---- Department Filtering Resolution ----
         department_filter = request.GET.get('department')
@@ -392,14 +393,14 @@ def attendance_report_with_employee_details(request):
 
         # ---- Fetch Employee Lookup ----
         employee_map = {}
-        # Fetch only employees with face registered from SQL
-        face_registered_ids = set(Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True))
+        # Fetch only employees with face registered from SQL (excluding inactive)
+        face_registered_ids = {str(eid) for eid in Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True) if str(eid) not in inactive_ids}
 
         # Fetch matching profiles from Mongo with projection
         all_profiles = list(profiles.find(profile_query, {'_id': 0, 'employeeId': 1, 'employeeName': 1, 'department': 1, 'designation': 1}))
         for emp in all_profiles:
             emp_id = str(emp.get("employeeId"))
-            if emp_id not in face_registered_ids:
+            if emp_id in inactive_ids or emp_id not in face_registered_ids:
                 continue
                 
             dept_code = emp.get("department")
@@ -416,6 +417,8 @@ def attendance_report_with_employee_details(request):
             registered_sql_emps = Employee.objects.filter(current_face_encoding__isnull=False)
             for sql_emp in registered_sql_emps:
                 emp_id_str = str(sql_emp.employee_id)
+                if emp_id_str in inactive_ids:
+                    continue
                 if emp_id_str not in employee_map:
                     employee_map[emp_id_str] = {
                         "employeeName": sql_emp.name,

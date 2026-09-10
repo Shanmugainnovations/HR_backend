@@ -162,8 +162,14 @@ def _load_mongo_reference_data():
     entitlements = {doc.get('department_code'): doc.get('department_name', 'N/A')
                     for doc in db['backend_diagnostics_Departments'].find({}, {'department_code': 1, 'department_name': 1, '_id': 0})}
 
-    users = {doc.get('employee_id'): {'is_active': doc.get('is_active', True), 'is_password_set': doc.get('is_password_set', False)}
-             for doc in db['backend_diagnostics_user'].find({}, {'employee_id': 1, 'is_active': 1, 'is_password_set': 1, '_id': 0})}
+    users = {}
+    for doc in db['backend_diagnostics_user'].find({}, {'employeeId': 1, 'employee_id': 1, 'is_active': 1, 'is_password_set': 1, '_id': 0}):
+        eid = str(doc.get('employeeId') or doc.get('employee_id') or '').strip()
+        if eid:
+            users[eid] = {
+                'is_active': doc.get('is_active', True),
+                'is_password_set': doc.get('is_password_set', False)
+            }
 
     return {
         'designations': desigs,
