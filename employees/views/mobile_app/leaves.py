@@ -3,9 +3,23 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
-from employees.models import LeaveRequest, LeaveType
+from employees.models import LeaveRequest, LeaveType, Register
 from employees.decorators import token_required
+from employees.views.authentication.auth import resolve_department_names
 import datetime
+
+def resolve_leave_department(leave_obj, reg_map=None):
+    raw_dept = getattr(leave_obj, 'department', '') or getattr(leave_obj, 'department_id', '')
+    if (not raw_dept or str(raw_dept).strip() == '') and reg_map:
+        raw_dept = reg_map.get(str(getattr(leave_obj, 'employee_id', '')).strip(), '')
+    
+    if not raw_dept:
+        return "General"
+    
+    resolved = resolve_department_names(str(raw_dept))
+    if not resolved or resolved == "Unassigned":
+        return str(raw_dept) if not str(raw_dept).upper().startswith("DEPT") else "General"
+    return resolved
 
 def get_leave_type_name(lt):
     if not lt:
@@ -46,11 +60,22 @@ def apply_leave(request):
 
         leave_type_str = leave_type_obj.name if hasattr(leave_type_obj, 'name') else str(leave_type_obj)
 
+        reg = Register.objects.filter(employee_id=str(employee_id).strip()).first()
+        emp_name = data.get('employee_name') or (reg.name if reg else 'Employee')
+        raw_dept = data.get('department') or (reg.department if reg else None)
+        raw_dept_id = data.get('department_id') or (reg.department if reg else None)
+
+        dept_name = resolve_department_names(raw_dept) if raw_dept else ""
+        if not dept_name or dept_name == "Unassigned":
+            dept_name = resolve_department_names(raw_dept_id) if raw_dept_id else ""
+        if not dept_name or dept_name == "Unassigned":
+            dept_name = raw_dept or "General"
+
         leave = LeaveRequest(
             employee_id=employee_id,
-            employee_name=data.get('employee_name', 'Employee'),
-            department=data.get('department', 'General'),
-            department_id=data.get('department_id', 1),
+            employee_name=emp_name,
+            department=dept_name,
+            department_id=raw_dept_id or raw_dept or dept_name,
             start_date=start_date,
             end_date=end_date,
             leave_type=leave_type_str,
@@ -106,13 +131,19 @@ def my_leaves(request):
 def pending_leaves(request):
     try:
         leaves = LeaveRequest.objects.filter(status='Pending').order_by('-applied_on')
+        emp_ids = [str(l.employee_id).strip() for l in leaves if l.employee_id]
+        reg_map = {
+            str(r.employee_id).strip(): (r.department or '')
+            for r in Register.objects.filter(employee_id__in=emp_ids)
+        }
         data = []
         for l in leaves:
             data.append({
                 "id": l.id,
                 "employee_id": l.employee_id,
-                "employee_name": l.employee_name,
-                "department": l.department,
+                "employee_name": l.employee_name or f"Employee #{l.employee_id}",
+                "department": resolve_leave_department(l, reg_map),
+                "department_code": l.department_id or l.department,
                 "start_date": l.start_date.strftime('%Y-%m-%d') if l.start_date else None,
                 "end_date": l.end_date.strftime('%Y-%m-%d') if l.end_date else None,
                 "leave_type": get_leave_type_name(l.leave_type),
@@ -187,13 +218,19 @@ def update_leave_status(request, leave_id):
 def leave_history(request):
     try:
         leaves = LeaveRequest.objects.exclude(status='Pending').order_by('-applied_on')
+        emp_ids = [str(l.employee_id).strip() for l in leaves if l.employee_id]
+        reg_map = {
+            str(r.employee_id).strip(): (r.department or '')
+            for r in Register.objects.filter(employee_id__in=emp_ids)
+        }
         data = []
         for l in leaves:
             data.append({
                 "id": l.id,
                 "employee_id": l.employee_id,
-                "employee_name": l.employee_name,
-                "department": l.department,
+                "employee_name": l.employee_name or f"Employee #{l.employee_id}",
+                "department": resolve_leave_department(l, reg_map),
+                "department_code": l.department_id or l.department,
                 "start_date": l.start_date.strftime('%Y-%m-%d') if l.start_date else None,
                 "end_date": l.end_date.strftime('%Y-%m-%d') if l.end_date else None,
                 "leave_type": get_leave_type_name(l.leave_type),

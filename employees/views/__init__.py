@@ -53,6 +53,8 @@ from .global_management import (
     update_department,
     update_designation,
     get_todays_birthdays,
+    get_monthly_birthdays,
+    export_birthdays_csv,
     check_employee_id,
     create_employee,
     update_employee,
@@ -75,7 +77,8 @@ from .leave_management.leave_views import (
     update_leave_status,
     leave_history,
     leave_type_list_create,
-    leave_type_detail
+    leave_type_detail,
+    get_leave_balances
 )
 from .analytics_and_reports.reports import roster_attendance_report
 from .analytics_and_reports.roster_report import (
@@ -97,7 +100,11 @@ from .mobile_app import (
     leave_type_detail as mobile_leave_type_detail,
     get_full_employee_profile,
     serve_employee_profile_photo,
-    change_employee_password
+    change_employee_password,
+    submit_permission_request,
+    get_my_permission_requests,
+    get_pending_permission_requests,
+    review_permission_request
 )
 from .mobile_app.notifications import (
     get_employee_notifications,
@@ -117,9 +124,17 @@ from .payroll.payroll_views import (
     monthly_payroll_view,
     update_payroll_entry,
     approve_monthly_payroll,
+    department_payroll_action,
+    payroll_audit_trail_view,
     export_bank_transfer_sheet,
     export_pf_ecr,
     export_esi_return,
     download_payslip_html,
-    employee_payslip_history
+    employee_payslip_history,
+    get_late_hours_deductions_report,
+    get_employee_late_events_breakdown,
+    apply_employee_permission,
+    revoke_employee_permission,
+    get_employee_monthly_permissions,
+    manual_deduction_action
 )

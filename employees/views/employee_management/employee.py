@@ -91,7 +91,7 @@ def get_all_employees_with_images(request):
 
             image_preview = None
             if emp.image_md5:
-                image_preview = request.build_absolute_uri(f"/_b_a_c_k_e_n_d/HR/employees/image-by-md5/{emp.image_md5}/")
+                image_preview = request.build_absolute_uri(f"/_b_a_c_k_e_n_d/HRA/employees/image-by-md5/{emp.image_md5}/")
 
             employee_list.append({
                 "employee_id": emp.employee_id,
