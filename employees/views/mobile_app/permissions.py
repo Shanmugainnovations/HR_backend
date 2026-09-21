@@ -29,14 +29,18 @@ def resolve_perm_department(r_doc, reg_map=None):
 
 def get_permissions_collection():
     client = get_mongo_client()
-    db_name = os.environ.get("HR_DB_NAME", "HR")
+    from django.conf import settings
+    default_db = getattr(settings, 'DATABASES', {}).get('default', {}).get('NAME', 'Global')
+    db_name = os.environ.get("HR_DB_NAME") or os.environ.get("GLOBAL_DB_NAME") or default_db
     db = client[db_name]
     return db['employees_permission_requests']
 
 
 def get_diagnostics_db():
     client = get_mongo_client()
-    db_name = os.environ.get("HR_DB_NAME", "HR")
+    from django.conf import settings
+    default_db = getattr(settings, 'DATABASES', {}).get('default', {}).get('NAME', 'Global')
+    db_name = os.environ.get("HR_DB_NAME") or os.environ.get("GLOBAL_DB_NAME") or default_db
     return client[db_name]
 
 

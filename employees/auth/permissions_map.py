@@ -102,6 +102,7 @@ PAGE_MAPPING = {
     '/update_designation/.*': 'GL-P-EAD',
     '/get_employee_by_id/.*': 'GL-P-ED',
     '/update_employee/.*': 'GL-P-ED',
+    '/UpdateUserStatus-user/.*': 'GL-P-P',
     '/get_employees_with_labels/': 'GL-P-ED',
     '/employees/.*': 'GL-P-ED',
     '/departments/.*': 'GL-P-ED',

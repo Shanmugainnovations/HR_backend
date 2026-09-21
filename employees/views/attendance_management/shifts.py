@@ -34,7 +34,22 @@ def shift_list_create(request):
                         shift_ids.add(s.id)
                 except Exception:
                     pass
-                    
+            
+            # Also include any shift IDs that are actually assigned in EmployeeShiftSchedule for this department's employees
+            try:
+                from employees.views.common.utils import get_mongo_client
+                mongo_client = get_mongo_client()
+                global_db = mongo_client[os.environ.get("GLOBAL_DB_NAME", "Global")]
+                mongo_query = dept_ctx.get('mongo_query', {})
+                matched_profiles = list(global_db['backend_diagnostics_profile'].find(mongo_query, {'employeeId': 1}))
+                emp_ids = [str(p.get('employeeId')) for p in matched_profiles if p.get('employeeId')]
+                if emp_ids:
+                    from employees.models import EmployeeShiftSchedule
+                    assigned_shift_ids = EmployeeShiftSchedule.objects.filter(employee_id__in=emp_ids).values_list('shift_id', flat=True).distinct()
+                    shift_ids.update(assigned_shift_ids)
+            except Exception:
+                pass
+
             if shift_ids:
                 shifts = [s for s in Shift.objects.all() if s.id in shift_ids and getattr(s, 'is_active', True)]
             else:

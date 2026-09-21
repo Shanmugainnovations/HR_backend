@@ -59,6 +59,64 @@ def save_or_update_encoding(employee_id, encoding, created_by=None, name=None, i
 
     return emp
 
+
+def sync_employee_status(employee_id, is_active):
+    """
+    Synchronizes employee active status across:
+    1. MongoDB backend_diagnostics_user (is_active)
+    2. MongoDB backend_diagnostics_profile (employmentStatus = 'Active' / 'Inactive')
+    3. SQLite local Employee model (is_active)
+    4. Force refreshes attendance face encoding cache.
+    """
+    import logging
+    from datetime import datetime
+    logger = logging.getLogger(__name__)
+
+    emp_id_str = str(employee_id).strip()
+    is_active_bool = bool(is_active)
+    employment_status = 'Active' if is_active_bool else 'Inactive'
+    now_utc = datetime.utcnow()
+
+    # 1. Update MongoDB backend_diagnostics_user & backend_diagnostics_profile
+    try:
+        client = get_mongo_client()
+        if client:
+            db_name = os.environ.get('GLOBAL_DB_NAME', 'Global')
+            db = client[db_name]
+            db['backend_diagnostics_user'].update_one(
+                {'$or': [{'employeeId': emp_id_str}, {'employee_id': emp_id_str}]},
+                {'$set': {'is_active': is_active_bool, 'lastmodified_date': now_utc}}
+            )
+            db['backend_diagnostics_profile'].update_one(
+                {'$or': [{'employeeId': emp_id_str}, {'employee_id': emp_id_str}]},
+                {'$set': {'employmentStatus': employment_status, 'lastmodified_date': now_utc}}
+            )
+    except Exception as mongo_err:
+        logger.warning(f"Could not sync Mongo user status for {emp_id_str}: {mongo_err}")
+
+    # 2. Update local SQLite Employee model
+    try:
+        local_emp = Employee.objects.filter(employee_id=emp_id_str).first()
+        if local_emp:
+            local_emp.is_active = is_active_bool
+            local_emp.save(update_fields=['is_active'])
+    except Exception as local_err:
+        logger.warning(f"Could not sync local Employee record for {emp_id_str}: {local_err}")
+
+    # 3. Force refresh face encoding cache in attendance view
+    try:
+        from employees.views.attendance_management.attendance import get_optimized_encodings
+        get_optimized_encodings(force_refresh=True)
+    except Exception as cache_err:
+        logger.warning(f"Could not refresh face encoding cache: {cache_err}")
+
+    return {
+        'employee_id': emp_id_str,
+        'is_active': is_active_bool,
+        'employment_status': employment_status
+    }
+
+
 def to_list(encoding):
     if isinstance(encoding, str):
         return ast.literal_eval(encoding)
@@ -337,5 +395,36 @@ def get_request_user_hod_departments(request):
             names.add(term)
 
     return True, sorted(list(names))
+
+
+def is_admin_user(request):
+    """
+    Returns True if the request is made by an Admin / HR user.
+    Returns False if the request is made by an HOD or non-admin employee.
+    """
+    is_hod, _ = get_request_user_hod_departments(request)
+    if is_hod:
+        return False
+
+    editor_role = (
+        request.headers.get('Editor-Role') or
+        request.headers.get('editor-role') or
+        request.GET.get('role') or
+        ''
+    ).strip().upper()
+    if 'HOD' in editor_role and 'ADMIN' not in editor_role:
+        return False
+
+    auth_header = request.headers.get('Authorization') or request.META.get('HTTP_AUTHORIZATION')
+    if auth_header:
+        from employees.token_utils import decode_employee_token
+        payload = decode_employee_token(auth_header)
+        if payload:
+            role = str(payload.get('role') or payload.get('primaryRole') or '').upper()
+            if 'HOD' in role and 'ADMIN' not in role:
+                return False
+
+    return True
+
 
 

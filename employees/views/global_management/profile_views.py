@@ -19,10 +19,10 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 
-from employees.models import Profile, GridFSFile
+from employees.models import Profile, GridFSFile, Employee
 from employees.serializers import ProfileSerializer, GridFSFileSerializer
 from employees.permissions import HasRoleAndDataPermission, HasRolePermission
-from employees.views.common.utils import get_mongo_client
+from employees.views.common.utils import get_mongo_client, sync_employee_status
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +156,18 @@ def _load_mongo_reference_data():
     depts = {doc.get('department_code'): doc.get('department_name', 'N/A')
              for doc in db['backend_diagnostics_Departments'].find({}, {'department_code': 1, 'department_name': 1, '_id': 0})}
 
-    roles = {doc.get('role_code'): doc.get('role_name', 'N/A')
-             for doc in db['backend_diagnostics_admin_groups'].find({}, {'role_code': 1, 'role_name': 1, '_id': 0})}
+    roles = {}
+    for doc in db['backend_diagnostics_RoleMapping'].find({}, {'role_code': 1, 'role_name': 1, '_id': 0}):
+        code = doc.get('role_code')
+        name = doc.get('role_name')
+        if code and name:
+            roles[code] = name
+
+    for doc in db['backend_diagnostics_admin_groups'].find({}, {'role_code': 1, 'role_name': 1, '_id': 0}):
+        code = doc.get('role_code')
+        name = doc.get('role_name')
+        if code and name and code not in roles:
+            roles[code] = name
 
     entitlements = {doc.get('department_code'): doc.get('department_name', 'N/A')
                     for doc in db['backend_diagnostics_Departments'].find({}, {'department_code': 1, 'department_name': 1, '_id': 0})}
@@ -503,10 +513,12 @@ def get_employees_with_labels(request):
             emp = _sanitize_mongo_doc(raw_emp)
             emp['designation_name'] = reference_data['designations'].get(emp.get('designation'), 'N/A')
             emp['department_name'] = reference_data['departments'].get(emp.get('department'), 'N/A')
-            emp['primary_role_name'] = reference_data['roles'].get(emp.get('primaryRole'), 'N/A')
+            primary_role_code = emp.get('primaryRole')
+            emp['primary_role_name'] = reference_data['roles'].get(primary_role_code, primary_role_code if primary_role_code else 'N/A')
 
-            additional_roles = safe_json_load(emp.get('additionalRoles', '[]'))
-            emp['additional_role_names'] = [reference_data['roles'].get(code, 'N/A') for code in additional_roles]
+            raw_add_roles = emp.get('additionalRoles', [])
+            additional_roles = safe_json_load(raw_add_roles) if isinstance(raw_add_roles, str) else (raw_add_roles or [])
+            emp['additional_role_names'] = [reference_data['roles'].get(code, code) for code in additional_roles if code]
 
             entitlement_codes = safe_json_load(emp.get('dataEntitlements', '[]'))
             emp['data_entitlement_names'] = [reference_data['entitlements'].get(code, 'N/A') for code in entitlement_codes]
@@ -578,3 +590,40 @@ def serve_file(request, file_id):
         return response
     except Exception as e:
         raise Http404(f"File not found or invalid: {str(e)}")
+
+
+@api_view(['PATCH', 'PUT'])
+@permission_classes([HasRoleAndDataPermission])
+def update_user_status(request, employee_id):
+    """
+    Update employee active status across backend_diagnostics_user,
+    backend_diagnostics_profile, and local Employee model.
+    """
+    try:
+        is_active = request.data.get('is_active')
+        employment_status = request.data.get('employment_status') or request.data.get('employmentStatus')
+
+        if is_active is None and not employment_status:
+            return Response({'error': 'is_active or employment_status is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if is_active is None and employment_status:
+            is_active = (str(employment_status).lower() == 'active')
+        else:
+            is_active = bool(is_active)
+
+        if not employment_status:
+            employment_status = 'Active' if is_active else 'Inactive'
+
+        res = sync_employee_status(employee_id, is_active)
+
+        return Response({
+            'success': True,
+            'message': f'User status updated to {res["employment_status"]} successfully',
+            **res
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Error updating user status for {employee_id}: {str(e)}")
+        return Response({'error': f'Failed to update user status: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+

@@ -250,6 +250,7 @@ def update_leave_status(request, leave_id):
             return Response({"error": "Invalid status"}, status=400)
             
         leave = LeaveRequest.objects.get(id=leave_id)
+        prev_status = leave.status
         leave.status = status_val
         if reviewer_name:
             leave.reviewed_by_name = reviewer_name
@@ -285,6 +286,51 @@ def update_leave_status(request, leave_id):
                 import traceback
                 traceback.print_exc()
                 print("Failed to update roster on leave approval:", roster_e)
+
+        # Synchronize leave balance in Mongo
+        try:
+            if prev_status != status_val:
+                from pymongo import MongoClient
+                mongo_uri = os.environ.get('GLOBAL_DB_HOST', 'mongodb://admin:SMRFT%40prod2026@45.252.190.162:27017/')
+                client = MongoClient(mongo_uri)
+                global_db = client['Global']
+                bal_coll = global_db['employees_leave_balance']
+                
+                emp_id_str = str(leave.employee_id).strip()
+                bal_doc = bal_coll.find_one({'employee_id': emp_id_str})
+                
+                # Calculate days requested
+                if leave.start_date and leave.end_date:
+                    leave_days = (leave.end_date - leave.start_date).days + 1
+                else:
+                    leave_days = 1.0
+
+                ltype_upper = str(leave.leave_type or '').upper().strip()
+                type_key = 'EL'
+                if 'NH' in ltype_upper or 'HOLIDAY' in ltype_upper or 'PH' in ltype_upper:
+                    type_key = 'NH'
+                elif 'SL' in ltype_upper or 'SICK' in ltype_upper or 'CL' in ltype_upper or 'CASUAL' in ltype_upper or 'C' in ltype_upper:
+                    type_key = 'SL'
+                elif 'EL' in ltype_upper or 'EARNED' in ltype_upper:
+                    type_key = 'EL'
+
+                if bal_doc:
+                    lb = bal_doc.get('leave_balances', {})
+                    current_val = float(lb.get(type_key, lb.get(type_key.lower(), 0.0)))
+                    
+                    if status_val == 'Approved' and prev_status != 'Approved':
+                        new_val = max(0.0, current_val - leave_days)
+                        lb[type_key] = new_val
+                    elif prev_status == 'Approved' and status_val != 'Approved':
+                        new_val = current_val + leave_days
+                        lb[type_key] = new_val
+
+                    tot_avail = sum(float(v) for k, v in lb.items() if k != 'total_available')
+                    lb['total_available'] = round(tot_avail, 2)
+                    
+                    bal_coll.update_one({'_id': bal_doc['_id']}, {'$set': {'leave_balances': lb, 'updated_at': datetime.now()}})
+        except Exception as bal_err:
+            print("Error updating leave balance in Mongo:", bal_err)
 
         # Auto-create real-time notification for the employee
         try:
@@ -425,14 +471,99 @@ def get_leave_balances(request):
         ])
         raw_records = list(cursor)
 
-        # Format records
+        # Fallback: If querying a specific employee and no balance record exists yet, create default entry from Mongo profile
+        if not raw_records and emp_id:
+            try:
+                prof_doc = db['backend_diagnostics_profile'].find_one({'employeeId': str(emp_id).strip()})
+                if prof_doc:
+                    default_doc = {
+                        'employee_id': str(emp_id).strip(),
+                        'employee_name': prof_doc.get('employeeName') or f"{prof_doc.get('first_name', '')} {prof_doc.get('last_name', '')}".strip() or str(emp_id),
+                        'department': prof_doc.get('department_name') or prof_doc.get('department') or 'General',
+                        'department_code': prof_doc.get('department') or 'DEPT001',
+                        'designation': prof_doc.get('designation') or 'Staff',
+                        'doj': prof_doc.get('doj') or '2024-01-01',
+                        'leave_balances': {'EL': 12.0, 'NH': 9.0, 'SL': 12.0, 'total_available': 33.0},
+                        'eligible_entitlement': {'EL': 12.0, 'NH': 9.0, 'SL': 12.0, 'total_eligible': 33.0},
+                        'created_at': datetime.now(),
+                        'updated_at': datetime.now()
+                    }
+                    coll.insert_one(default_doc)
+                    raw_records = [default_doc]
+            except Exception as fb_err:
+                print("Error in fallback leave balance creation:", fb_err)
+
+        # Format records and calculate approved leave taken
         records = []
+        rec_emp_ids = [str(r.get('employee_id')).strip() for r in raw_records if r.get('employee_id')]
+        taken_summary = {}
+        if rec_emp_ids:
+            try:
+                approved_reqs = LeaveRequest.objects.filter(employee_id__in=rec_emp_ids, status='Approved')
+                for req in approved_reqs:
+                    eid = str(req.employee_id).strip()
+                    days = (req.end_date - req.start_date).days + 1 if req.start_date and req.end_date else 1
+                    ltype = str(req.leave_type or '').upper().strip()
+                    
+                    tkey = 'EL'
+                    if 'NH' in ltype or 'HOLIDAY' in ltype or 'PH' in ltype:
+                        tkey = 'NH'
+                    elif 'SL' in ltype or 'SICK' in ltype or 'CL' in ltype or 'CASUAL' in ltype or 'C' in ltype:
+                        tkey = 'SL'
+
+                    if eid not in taken_summary:
+                        taken_summary[eid] = {'total_taken': 0.0, 'EL': 0.0, 'NH': 0.0, 'SL': 0.0}
+                    taken_summary[eid]['total_taken'] += days
+                    taken_summary[eid][tkey] = taken_summary[eid].get(tkey, 0.0) + days
+            except Exception as t_err:
+                print("Error computing taken leaves summary:", t_err)
+
         for doc in raw_records:
             doc['_id'] = str(doc['_id'])
             if 'created_at' in doc and hasattr(doc['created_at'], 'isoformat'):
                 doc['created_at'] = doc['created_at'].isoformat()
             if 'updated_at' in doc and hasattr(doc['updated_at'], 'isoformat'):
                 doc['updated_at'] = doc['updated_at'].isoformat()
+            
+            eid = str(doc.get('employee_id')).strip()
+            ee = doc.get('eligible_entitlement', {})
+            lb = doc.get('leave_balances', {})
+
+            el_elig = float(ee.get('EL', ee.get('el', 12.0)))
+            nh_elig = float(ee.get('NH', ee.get('nh', 9.0)))
+            sl_elig = float(ee.get('SL', ee.get('sl', 12.0)))
+            tot_elig = float(ee.get('total_eligible', el_elig + nh_elig + sl_elig))
+
+            # The values stored from the excel sheet represent taken leaves
+            el_sheet_taken = float(lb.get('EL', lb.get('el', 0.0)))
+            nh_sheet_taken = float(lb.get('NH', lb.get('nh', 0.0)))
+            sl_sheet_taken = float(lb.get('SL', lb.get('sl', 0.0)))
+
+            req_taken = taken_summary.get(eid, {'total_taken': 0.0, 'EL': 0.0, 'NH': 0.0, 'SL': 0.0})
+
+            el_taken_tot = round(el_sheet_taken + req_taken.get('EL', 0.0), 2)
+            nh_taken_tot = round(nh_sheet_taken + req_taken.get('NH', 0.0), 2)
+            sl_taken_tot = round(sl_sheet_taken + req_taken.get('SL', 0.0), 2)
+            total_taken_tot = round(el_taken_tot + nh_taken_tot + sl_taken_tot, 2)
+
+            doc['leaves_taken'] = {
+                'total_taken': total_taken_tot,
+                'EL': el_taken_tot,
+                'NH': nh_taken_tot,
+                'SL': sl_taken_tot
+            }
+
+            el_rem = max(0.0, round(el_elig - el_taken_tot, 2))
+            nh_rem = max(0.0, round(nh_elig - nh_taken_tot, 2))
+            sl_rem = max(0.0, round(sl_elig - sl_taken_tot, 2))
+            tot_rem = round(el_rem + nh_rem + sl_rem, 2)
+
+            doc['leave_balances'] = {
+                'EL': el_rem,
+                'NH': nh_rem,
+                'SL': sl_rem,
+                'total_available': tot_rem
+            }
             records.append(doc)
 
         # Handle CSV export

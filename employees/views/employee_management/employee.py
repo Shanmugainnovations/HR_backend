@@ -23,7 +23,7 @@ from employees.models import Employee
 from employees.serializers import EmployeeCreateSerializer
 from employees.face_utils import imagefile_to_encoding, compute_md5
 
-from employees.views.common.utils import save_or_update_encoding, get_mongo_client
+from employees.views.common.utils import save_or_update_encoding, get_mongo_client, sync_employee_status
 
 load_dotenv()
 
@@ -193,8 +193,7 @@ def get_employee_by_md5(request, image_md5):
 @api_view(['POST'])
 def enable_facial_recognition(request, employee_id):
     emp = get_object_or_404(Employee, employee_id=employee_id)
-    emp.is_active = True
-    emp.save(update_fields=['is_active'])
+    sync_employee_status(employee_id, True)
     return Response({"success": True, "employee_id": emp.employee_id})
 
 
@@ -205,8 +204,7 @@ def disable_facial_recognition(request, employee_id):
     if not emp.current_face_encoding:
         return Response({"error": "No active face encoding found"}, status=400)
 
-    emp.is_active = False
-    emp.save(update_fields=['is_active'])
+    sync_employee_status(employee_id, False)
     return Response({"success": True, "employee_id": emp.employee_id})
 
 

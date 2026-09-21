@@ -120,6 +120,7 @@ urlpatterns = [
     path('create_employee/', views.create_employee, name='create-employee'),
 
     path('update_employee/<str:employee_id>/', views.update_employee, name='update-employee'),
+    path('UpdateUserStatus-user/<str:employee_id>/', views.update_user_status, name='update-user-status'),
     path('get_employee_by_id/<str:employee_id>/', views.get_employee_by_id, name='get-employee-by-id'),
     path('get_employees_with_labels/', views.get_employees_with_labels, name='get-employees-with-labels'),
     path('upload-gridfs/', views.upload_file, name='upload-gridfs'),
