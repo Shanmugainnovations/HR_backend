@@ -125,12 +125,54 @@ def my_leaves(request):
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+from employees.views.common.utils import get_request_user_hod_departments, resolve_department_filter, get_cached_reference_maps
+from django.db.models import Q
+
+def filter_leaves_for_hod(queryset, request):
+    is_hod, hod_assigned_depts = get_request_user_hod_departments(request)
+    if not is_hod:
+        return queryset
+
+    if not hod_assigned_depts:
+        return queryset.none()
+
+    dept_map, _, _ = get_cached_reference_maps()
+    reverse_dept_map = {str(v).lower(): k for k, v in dept_map.items()}
+
+    all_terms = set()
+    for d in hod_assigned_depts:
+        d_str = str(d).strip()
+        all_terms.add(d_str)
+        all_terms.add(d_str.lower())
+        res = resolve_department_filter(d_str)
+        for t in res.get('target_terms', []):
+            all_terms.add(t)
+            all_terms.add(t.lower())
+        code = reverse_dept_map.get(d_str.lower())
+        if code:
+            all_terms.add(code)
+            all_terms.add(code.lower())
+
+    dept_emp_ids = list(
+        Register.objects.filter(
+            department__in=list(all_terms)
+        ).values_list('employee_id', flat=True)
+    )
+
+    return queryset.filter(
+        Q(department__in=list(all_terms)) |
+        Q(department_id__in=list(all_terms)) |
+        Q(employee_id__in=dept_emp_ids)
+    )
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 @token_required
 def pending_leaves(request):
     try:
-        leaves = LeaveRequest.objects.filter(status='Pending').order_by('-applied_on')
+        leaves_qs = LeaveRequest.objects.filter(status='Pending').order_by('-applied_on')
+        leaves = filter_leaves_for_hod(leaves_qs, request)
         emp_ids = [str(l.employee_id).strip() for l in leaves if l.employee_id]
         reg_map = {
             str(r.employee_id).strip(): (r.department or '')
@@ -155,8 +197,6 @@ def pending_leaves(request):
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
-from employees.decorators import token_required
 
 @api_view(['PUT'])
 @permission_classes([AllowAny])
@@ -215,9 +255,11 @@ def update_leave_status(request, leave_id):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@token_required
 def leave_history(request):
     try:
-        leaves = LeaveRequest.objects.exclude(status='Pending').order_by('-applied_on')
+        leaves_qs = LeaveRequest.objects.exclude(status='Pending').order_by('-applied_on')
+        leaves = filter_leaves_for_hod(leaves_qs, request)
         emp_ids = [str(l.employee_id).strip() for l in leaves if l.employee_id]
         reg_map = {
             str(r.employee_id).strip(): (r.department or '')

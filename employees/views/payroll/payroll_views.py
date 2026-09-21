@@ -792,6 +792,31 @@ def monthly_payroll_view(request):
             total_net = sum(float(r.get('netSalary', 0) or 0) for r in new_records)
             total_deductions = sum(float(r.get('totalDeductions', 0) or 0) for r in new_records)
 
+        # Sanitize salary fields for non-Admin (HOD) users
+        from employees.views.common.utils import is_admin_user
+        if not is_admin_user(request):
+            for r in new_records:
+                r['basicSalary'] = 0
+                r['grossSalary'] = 0
+                r['netSalary'] = 0
+                r['netPayout'] = 0
+                r['lopDeduction'] = 0
+                r['totalDeductions'] = 0
+                r['pfEmployee'] = 0
+                r['pfEmployer'] = 0
+                r['esiEmployee'] = 0
+                r['esiEmployer'] = 0
+                r['otherAllowances'] = 0
+                r['canteenDeduction'] = 0
+                r['advanceDeduction'] = 0
+                r['bankDetails'] = {}
+                r['bankAccount'] = ''
+                r['ifscCode'] = ''
+                r['bankName'] = ''
+            total_gross = 0
+            total_net = 0
+            total_deductions = 0
+
         return Response({
             'message': f"Payroll generated for {target_month} ({from_date_str} to {to_date_str}) matching Duty Roster",
             'month': target_month,
@@ -1464,6 +1489,10 @@ def export_bank_transfer_sheet(request):
     Generate CSV file for Bank Transfer (NEFT/RTGS Batch).
     """
     try:
+        from employees.views.common.utils import is_admin_user
+        if not is_admin_user(request):
+            return Response({'error': 'Permission denied: Salary exports are restricted to Admin users only.'}, status=status.HTTP_403_FORBIDDEN)
+
         db = get_mongo_db()
         payroll_col = db['backend_diagnostics_payroll']
         month = request.GET.get('month') or datetime.now().strftime('%Y-%m')
@@ -1509,10 +1538,12 @@ def export_bank_transfer_sheet(request):
 def export_pf_ecr(request):
     """
     Generate Statutory EPFO ECR (Electronic Challan cum Return) CSV / Text file.
-    Columns: UAN, Member Name, Gross Wages, EPF Wages, EPS Wages, EDLI Wages, 
-             EE EPF Share (12%), ER EPS Share (8.33%), ER EPF Share (3.67%), NCP Days, Refund
     """
     try:
+        from employees.views.common.utils import is_admin_user
+        if not is_admin_user(request):
+            return Response({'error': 'Permission denied: PF ECR exports are restricted to Admin users only.'}, status=status.HTTP_403_FORBIDDEN)
+
         db = get_mongo_db()
         payroll_col = db['backend_diagnostics_payroll']
         profiles_col = db['backend_diagnostics_profile']
@@ -1590,10 +1621,12 @@ def export_pf_ecr(request):
 def export_esi_return(request):
     """
     Generate Statutory ESIC Monthly Contribution Return CSV.
-    Columns: IP Number, IP Name, No of Days Worked, Total Monthly Wages, 
-             Employee Contribution (0.75%), Employer Contribution (3.25%), Reason Code
     """
     try:
+        from employees.views.common.utils import is_admin_user
+        if not is_admin_user(request):
+            return Response({'error': 'Permission denied: ESI exports are restricted to Admin users only.'}, status=status.HTTP_403_FORBIDDEN)
+
         db = get_mongo_db()
         payroll_col = db['backend_diagnostics_payroll']
         profiles_col = db['backend_diagnostics_profile']
