@@ -19,7 +19,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 
-from employees.models import Profile, GridFSFile, Employee
+from employees.models import Profile, GridFSFile, Employee, Register
 from employees.serializers import ProfileSerializer, GridFSFileSerializer
 from employees.permissions import HasRoleAndDataPermission, HasRolePermission
 from employees.views.common.utils import get_mongo_client, sync_employee_status
@@ -315,6 +315,7 @@ def create_employee(request):
             'dataEntitlements': data_entitlements,
             'hospitalCode': data.get('hospitalCode') or 'SH001',
             'employmentStatus': data.get('employmentStatus') or '',
+            'isDoctor': bool(data.get('isDoctor') in [True, 'true', 'True', 1, '1']),
             'registrationNumber': data.get('registrationNumber') or '',
             'validityDate': data.get('validityDate') or None,
             'kycDetails': kyc_details,
@@ -334,11 +335,37 @@ def create_employee(request):
 
         _profiles_col.insert_one(profile_doc)
 
+        # Auto-provision initial leave balance based on department, designation, and doctor status
+        try:
+            from employees.views.leave_management.leave_views import provision_employee_leave_balance
+            provision_employee_leave_balance(target_emp_id, profile_doc=profile_doc, client=_client)
+        except Exception as prov_err:
+            logger.warning(f"Failed to auto-provision leave balance for new profile {target_emp_id}: {prov_err}")
+
+        # Trigger welcome email if employee email address is provided
+        email_sent = False
+        emp_email = profile_doc.get('email')
+        if emp_email:
+            try:
+                frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+                reset_url = f"{frontend_url}/set-password?employeeId={target_emp_id}"
+                email_sent = send_welcome_email(
+                    employee_name=profile_doc.get('employeeName') or target_emp_id,
+                    employee_email=emp_email,
+                    reset_url=reset_url,
+                    employee_id=target_emp_id,
+                    department=profile_doc.get('department') or '',
+                    designation=profile_doc.get('designation') or ''
+                )
+            except Exception as mail_err:
+                logger.warning(f"Failed to send welcome email for new profile {target_emp_id}: {mail_err}")
+
         inserted_doc = _profiles_col.find_one({'employeeId': target_emp_id}, {'_id': 0})
         sanitized = _sanitize_mongo_doc(inserted_doc or profile_doc)
         return Response({
             'success': True,
-            'message': 'Employee profile created successfully',
+            'message': 'Employee profile created successfully' + (' and welcome email dispatched.' if email_sent else '. Note: Welcome email could not be sent (verify email SMTP settings).'),
+            'email_sent': email_sent,
             'data': sanitized,
             **sanitized
         }, status=status.HTTP_201_CREATED)
@@ -437,6 +464,7 @@ def update_employee(request, employee_id):
             'dataEntitlements': data_entitlements,
             'hospitalCode': data.get('hospitalCode', existing_doc.get('hospitalCode', 'SH001')),
             'employmentStatus': data.get('employmentStatus', existing_doc.get('employmentStatus', '')),
+            'isDoctor': bool(data.get('isDoctor') in [True, 'true', 'True', 1, '1']) if 'isDoctor' in data else existing_doc.get('isDoctor', False),
             'registrationNumber': data.get('registrationNumber', existing_doc.get('registrationNumber', '')),
             'validityDate': data.get('validityDate', existing_doc.get('validityDate')),
             'kycDetails': kyc_details,
@@ -454,6 +482,13 @@ def update_employee(request, employee_id):
 
         _profiles_col.update_one({'employeeId': str(employee_id)}, {'$set': update_fields})
         updated_doc = _profiles_col.find_one({'employeeId': str(employee_id)}, {'_id': 0})
+
+        # Re-provision/update leave balance if department/designation/isDoctor changed
+        try:
+            from employees.views.leave_management.leave_views import provision_employee_leave_balance
+            provision_employee_leave_balance(str(employee_id), profile_doc=updated_doc, force_recalculate=True, client=_client)
+        except Exception as prov_err:
+            logger.warning(f"Failed to update leave balance for profile {employee_id}: {prov_err}")
 
         return Response({'success': True, 'message': 'Profile updated successfully', 'data': _sanitize_mongo_doc(updated_doc)}, status=status.HTTP_200_OK)
 
@@ -526,6 +561,7 @@ def get_employees_with_labels(request):
             user_info = reference_data['users'].get(emp.get('employeeId'), {})
             emp['is_active'] = user_info.get('is_active', True)
             emp['is_password_set'] = user_info.get('is_password_set', False)
+            emp['isDoctor'] = bool(raw_emp.get('isDoctor') in [True, 'true', 'True', 1, '1'])
             employees.append(emp)
 
         return Response({'employees': employees}, status=200)
@@ -625,5 +661,96 @@ def update_user_status(request, employee_id):
     except Exception as e:
         logger.error(f"Error updating user status for {employee_id}: {str(e)}")
         return Response({'error': f'Failed to update user status: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def resend_employee_email(request, employee_id):
+    """
+    Resend welcome / credentials email to employee.
+    Looks up profile in Global DB backend_diagnostics_profile or Register/Employee.
+    Sends welcome email with password setup instructions.
+    """
+    try:
+        emp_str = str(employee_id).strip()
+        client = get_mongo_client()
+        global_db_name = os.getenv('GLOBAL_DB_NAME', 'Global')
+        global_db = client[global_db_name]
+
+        # 1. Lookup in backend_diagnostics_profile
+        profile = global_db['backend_diagnostics_profile'].find_one({
+            '$or': [{'employeeId': emp_str}, {'employeeId': int(emp_str) if emp_str.isdigit() else -1}]
+        })
+
+        emp_name = ""
+        emp_email = ""
+        dept = ""
+        desig = ""
+
+        if profile:
+            emp_name = profile.get('employeeName') or profile.get('name') or emp_str
+            emp_email = profile.get('email') or profile.get('officialEmail') or profile.get('personalEmail') or ''
+            dept = profile.get('department') or ''
+            desig = profile.get('designation') or ''
+
+        if not emp_email:
+            reg = Register.objects.filter(employee_id=emp_str).first()
+            if reg:
+                emp_name = emp_name or reg.name
+                dept = dept or reg.department
+                emp_email = getattr(reg, 'email', '')
+
+        if not emp_name:
+            emp = Employee.objects.filter(employee_id=emp_str).first()
+            if emp:
+                emp_name = f"{emp.first_name} {emp.last_name}".strip()
+                emp_email = emp_email or emp.email
+                dept = dept or getattr(emp, 'department', '')
+
+        if not emp_email:
+            return Response({
+                "success": False,
+                "error": f"No email address found for employee {emp_str}. Please update the employee's profile with an email address first."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Generate reset/setup URL
+        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+        reset_url = f"{frontend_url}/set-password?employeeId={emp_str}"
+
+        # Send email using send_welcome_email
+        email_sent = False
+        try:
+            email_sent = send_welcome_email(
+                employee_name=emp_name or emp_str,
+                employee_email=emp_email,
+                reset_url=reset_url,
+                employee_id=emp_str,
+                department=dept,
+                designation=desig
+            )
+        except Exception as mail_err:
+            logger.warning(f"send_welcome_email exception for {emp_str}: {mail_err}")
+
+        if not email_sent:
+            return Response({
+                "success": False,
+                "error": f"Failed to send welcome email to {emp_email}. Please verify email SMTP settings in backend .env/settings."
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response({
+            "success": True,
+            "message": f"Welcome & credentials email sent successfully to {emp_email}",
+            "employee_id": emp_str,
+            "email": emp_email,
+            "email_dispatched": email_sent
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Error in resend_employee_email for {employee_id}: {str(e)}")
+        return Response({
+            "success": False,
+            "error": str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 

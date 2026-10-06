@@ -55,6 +55,8 @@ from .global_management import (
     get_todays_birthdays,
     get_monthly_birthdays,
     export_birthdays_csv,
+    trigger_birthday_notifications_api,
+    send_birthday_wish_api,
     check_employee_id,
     create_employee,
     update_employee,
@@ -63,6 +65,7 @@ from .global_management import (
     upload_file,
     serve_file,
     update_user_status,
+    resend_employee_email,
 )
 
 from .canteen_management.canteen import (
@@ -79,7 +82,11 @@ from .leave_management.leave_views import (
     leave_history,
     leave_type_list_create,
     leave_type_detail,
-    get_leave_balances
+    get_leave_balances,
+    leave_policies,
+    leave_policy_detail,
+    sync_all_leave_balances,
+    provision_employee_leave_balance
 )
 from .analytics_and_reports.reports import roster_attendance_report
 from .analytics_and_reports.roster_report import (

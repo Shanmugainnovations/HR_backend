@@ -31,8 +31,12 @@ def to_ist(dt):
     return dt.astimezone(IST)
 
 def get_mongo_db():
-    mongo_uri = os.environ.get('GLOBAL_DB_HOST', 'mongodb://localhost:27017')
+    from employees.views.common.utils import get_mongo_client
+    client = get_mongo_client()
     db_name = os.environ.get('GLOBAL_DB_NAME', 'Global')
+    if client:
+        return client[db_name]
+    mongo_uri = os.environ.get('GLOBAL_DB_HOST', 'mongodb://admin:SMRFT%40prod2026@45.252.190.162:27017/')
     client = MongoClient(mongo_uri)
     return client[db_name]
 
@@ -460,6 +464,11 @@ def monthly_payroll_view(request):
         existing_records = [r for r in payroll_col.find(exist_query) if str(r.get('employeeId', '')).strip() not in inactive_ids]
         existing_map = {str(r.get('employeeId')): r for r in existing_records if r.get('employeeId')}
 
+        # Auto-recalculate if existing records are fragmented (fewer than 5 employees or missing department)
+        has_valid_departments = any(r.get('department') for r in existing_records)
+        if existing_records and (len(existing_records) < 5 or not has_valid_departments) and not recalculate:
+            recalculate = True
+
         # Clean up any lingering draft payroll records for disabled employees
         if inactive_ids:
             try:
@@ -509,6 +518,9 @@ def monthly_payroll_view(request):
                 departments_summary[d_name]['hasHodEdits'] = True
 
         if request.method == 'GET' and existing_records and not recalculate:
+            from employees.views.common.utils import is_admin_user
+            req_is_admin = is_admin_user(request)
+
             records = []
             total_gross = 0.0
             total_net = 0.0
@@ -522,6 +534,53 @@ def monthly_payroll_view(request):
                 total_gross += float(r.get('grossSalary', 0) or 0)
                 total_net += float(r.get('netSalary', 0) or 0)
                 total_deductions += float(r.get('totalDeductions', 0) or 0)
+
+            # Strictly scope records and summary to HOD assigned departments if requester is HOD
+            if is_hod and hod_assigned_depts:
+                hod_allowed_lower = {d.lower().strip() for d in hod_assigned_depts}
+                records = [r for r in records if str(r.get('department') or '').strip().lower() in hod_allowed_lower]
+                departments_summary = {k: v for k, v in departments_summary.items() if str(k).strip().lower() in hod_allowed_lower}
+                total_gross = sum(float(r.get('grossSalary', 0) or 0) for r in records)
+                total_net = sum(float(r.get('netSalary', 0) or 0) for r in records)
+                total_deductions = sum(float(r.get('totalDeductions', 0) or 0) for r in records)
+
+            # Sanitize salary fields for non-Admin (HOD) users
+            if not req_is_admin:
+                for r in records:
+                    r['basicSalary'] = 0
+                    r['grossSalary'] = 0
+                    r['netSalary'] = 0
+                    r['netPayout'] = 0
+                    r['lopDeduction'] = 0
+                    r['lateDeduction'] = 0
+                    r['totalDeductions'] = 0
+                    r['pf'] = 0
+                    r['esi'] = 0
+                    r['professionalTax'] = 0
+                    r['tdsDeduction'] = 0
+                    r['messEb'] = 0
+                    r['cautionDeposit'] = 0
+                    r['uniformId'] = 0
+                    r['vaccineDeduction'] = 0
+                    r['fines'] = 0
+                    r['otherDeductions'] = 0
+                    r['pfEmployee'] = 0
+                    r['pfEmployer'] = 0
+                    r['esiEmployee'] = 0
+                    r['esiEmployer'] = 0
+                    r['otherAllowances'] = 0
+                    r['canteenDeduction'] = 0
+                    r['advanceDeduction'] = 0
+                    r['bankDetails'] = {}
+                    r['bankAccount'] = ''
+                    r['ifscCode'] = ''
+                    r['bankName'] = ''
+                for d in departments_summary.values():
+                    d['totalGross'] = 0.0
+                    d['totalNet'] = 0.0
+                total_gross = 0.0
+                total_net = 0.0
+                total_deductions = 0.0
                 
             return Response({
                 'month': target_month,
@@ -623,10 +682,10 @@ def monthly_payroll_view(request):
             if gross == 0.0:
                 gross = basic
                 
-            # Statutory Contributions
+            # Statutory Contributions (New EPFO Rules: Wage ceiling ₹25,000, Max PF ₹3,000)
             pf_val = parse_num(salary_info.get('pfEmployee'))
             if pf_val == 0.0 and basic > 0 and salary_info.get('pfApplicable', True):
-                pf_val = 1800.0 if basic >= 15000 else round(basic * 0.12, 2)
+                pf_val = 3000.0 if basic >= 25000 else round(basic * 0.12, 2)
                 
             esi_val = round(gross * 0.0075, 2) if (gross <= 21000 and gross > 0 and salary_info.get('esiApplicable', True)) else 0.0
             pt_val = parse_num(salary_info.get('professionalTax'), 0.0)
@@ -801,7 +860,18 @@ def monthly_payroll_view(request):
                 r['netSalary'] = 0
                 r['netPayout'] = 0
                 r['lopDeduction'] = 0
+                r['lateDeduction'] = 0
                 r['totalDeductions'] = 0
+                r['pf'] = 0
+                r['esi'] = 0
+                r['professionalTax'] = 0
+                r['tdsDeduction'] = 0
+                r['messEb'] = 0
+                r['cautionDeposit'] = 0
+                r['uniformId'] = 0
+                r['vaccineDeduction'] = 0
+                r['fines'] = 0
+                r['otherDeductions'] = 0
                 r['pfEmployee'] = 0
                 r['pfEmployer'] = 0
                 r['esiEmployee'] = 0
@@ -813,9 +883,12 @@ def monthly_payroll_view(request):
                 r['bankAccount'] = ''
                 r['ifscCode'] = ''
                 r['bankName'] = ''
-            total_gross = 0
-            total_net = 0
-            total_deductions = 0
+            for d in new_dept_summary.values():
+                d['totalGross'] = 0.0
+                d['totalNet'] = 0.0
+            total_gross = 0.0
+            total_net = 0.0
+            total_deductions = 0.0
 
         return Response({
             'message': f"Payroll generated for {target_month} ({from_date_str} to {to_date_str}) matching Duty Roster",
@@ -869,7 +942,36 @@ def update_payroll_entry(request):
             
         existing = payroll_col.find_one(query)
         if not existing:
-            existing = {'month': month, 'employeeId': str(emp_id), 'status': 'Draft', 'departmentStatus': 'Draft'}
+            # Fetch profile to populate missing metadata on upsert
+            emp_prof = db['backend_diagnostics_profile'].find_one({'$or': [{'employeeId': str(emp_id)}, {'employeeId': int(emp_id) if str(emp_id).isdigit() else -1}]})
+            emp_name = (emp_prof.get('employeeName') or emp_prof.get('name') or str(emp_id)) if emp_prof else str(emp_id)
+            emp_dept = (emp_prof.get('department') or 'Admin') if emp_prof else 'Admin'
+            emp_desig = (emp_prof.get('designation') or '') if emp_prof else ''
+
+            from_d, to_d, p_key = '', '', month or ''
+            if month and len(month) == 7:
+                try:
+                    parts = month.split('-')
+                    y, m = int(parts[0]), int(parts[1])
+                    prev_y, prev_m = (y - 1, 12) if m == 1 else (y, m - 1)
+                    from_d = f"{prev_y:04d}-{prev_m:02d}-26"
+                    to_d = f"{y:04d}-{m:02d}-25"
+                    p_key = f"{from_d}_{to_d}"
+                except Exception:
+                    pass
+
+            existing = {
+                'month': month,
+                'employeeId': str(emp_id),
+                'employeeName': emp_name,
+                'department': emp_dept,
+                'designation': emp_desig,
+                'fromDate': from_d,
+                'toDate': to_d,
+                'periodKey': p_key,
+                'status': 'Draft',
+                'departmentStatus': 'Draft'
+            }
 
         # IMMUTABILITY CHECK: Reject if already Approved / Locked by Admin
         if existing.get('status') == 'Approved' or existing.get('departmentStatus') == 'Admin_Approved':
@@ -898,7 +1000,22 @@ def update_payroll_entry(request):
         gross = basic + hra + allowances + cl_encash + incentives
         
         # Deductions
-        lop_ded = float(data.get('lopDeduction', existing.get('lopDeduction', 0)) or 0)
+        from employees.views.common.utils import is_admin_user
+        req_is_admin = is_admin_user(request)
+        is_hod_editor = 'HOD' in editor_role.upper() or not req_is_admin
+
+        total_m_days = existing.get('totalMonthDays', 30) or 30
+        pres_days = float(data.get('presentDays', existing.get('presentDays', 0)) or 0)
+        lop_days = float(data.get('lopDays', existing.get('lopDays', 0)) or 0)
+        sp_days = int(data.get('spDays', existing.get('spDays', 0)) or 0)
+
+        # If HOD edited attendance, compute LOP deduction server-side from true gross
+        if is_hod_editor and total_m_days > 0 and gross > 0:
+            daily_g = gross / total_m_days
+            lop_ded = round(daily_g * lop_days, 2)
+        else:
+            lop_ded = float(data.get('lopDeduction', existing.get('lopDeduction', 0)) or 0)
+
         late_ded = float(data.get('lateDeduction', existing.get('lateDeduction', 0)) or 0)
         pf = float(data.get('pf', existing.get('pf', 0)) or 0)
         esi = float(data.get('esi', existing.get('esi', 0)) or 0)
@@ -936,9 +1053,6 @@ def update_payroll_entry(request):
         tot_ded = (lop_ded + late_ded + pf + esi + pt + tds + mess_eb + caution + uniform + vaccine + fines + other_ded)
         net = max(0.0, gross - tot_ded)
 
-        pres_days = float(data.get('presentDays', existing.get('presentDays', 0)) or 0)
-        lop_days = float(data.get('lopDays', existing.get('lopDays', 0)) or 0)
-        sp_days = int(data.get('spDays', existing.get('spDays', 0)) or 0)
         pay_mode = data.get('paymentMode', existing.get('paymentMode', 'Bank Transfer'))
         
         update_fields = {
@@ -1044,6 +1158,38 @@ def update_payroll_entry(request):
         updated = payroll_col.find_one(query)
         if updated:
             updated['_id'] = str(updated['_id'])
+            if not req_is_admin:
+                updated['basicSalary'] = 0
+                updated['grossSalary'] = 0
+                updated['netSalary'] = 0
+                updated['netPayout'] = 0
+                updated['lopDeduction'] = 0
+                updated['lateDeduction'] = 0
+                updated['totalDeductions'] = 0
+                updated['pf'] = 0
+                updated['esi'] = 0
+                updated['professionalTax'] = 0
+                updated['tdsDeduction'] = 0
+                updated['messEb'] = 0
+                updated['cautionDeposit'] = 0
+                updated['uniformId'] = 0
+                updated['vaccineDeduction'] = 0
+                updated['fines'] = 0
+                updated['otherDeductions'] = 0
+                updated['bankDetails'] = {}
+                cleaned_trail = []
+                for audit in updated.get('auditTrail', []):
+                    audit_copy = dict(audit)
+                    raw_changes = audit.get('changes', [])
+                    if isinstance(raw_changes, list):
+                        audit_copy['changes'] = [
+                            ch for ch in raw_changes 
+                            if 'salary' not in str(ch.get('field', '')).lower()
+                            and 'deduct' not in str(ch.get('field', '')).lower()
+                            and str(ch.get('field', '')) not in ['basicSalary', 'hra', 'allowances', 'clEncashment', 'incentives', 'grossSalary', 'netSalary', 'pf', 'esi', 'professionalTax', 'tdsDeduction']
+                        ]
+                    cleaned_trail.append(audit_copy)
+                updated['auditTrail'] = cleaned_trail
         
         return Response({
             'message': 'Payroll entry updated successfully',
@@ -1168,9 +1314,10 @@ def populate_month_payroll_if_missing(month):
         if gross == 0.0:
             gross = basic
 
+        # Statutory PF (New EPFO Rules: Wage ceiling ₹25,000, Max PF ₹3,000)
         pf = parse_n(salary_info.get('pfEmployee'))
         if pf == 0.0 and basic > 0 and salary_info.get('pfApplicable', True):
-            pf = 1800.0 if basic >= 15000 else round(basic * 0.12, 2)
+            pf = 3000.0 if basic >= 25000 else round(basic * 0.12, 2)
 
         esi = round(gross * 0.0075, 2) if (gross <= 21000 and gross > 0 and salary_info.get('esiApplicable', True)) else 0.0
         pt = parse_n(salary_info.get('professionalTax'), 0.0)
@@ -1469,8 +1616,34 @@ def payroll_audit_trail_view(request):
             'lopDays': 1,
         }))
 
+        from employees.views.common.utils import is_admin_user
+        req_is_admin = is_admin_user(request)
+
         for r in records:
             r['_id'] = str(r['_id'])
+            if not req_is_admin:
+                r.pop('grossSalary', None)
+                r.pop('netSalary', None)
+                cleaned_trail = []
+                for audit in r.get('auditTrail', []):
+                    audit_copy = dict(audit)
+                    raw_changes = audit.get('changes', [])
+                    if isinstance(raw_changes, list):
+                        audit_copy['changes'] = [
+                            ch for ch in raw_changes 
+                            if 'salary' not in str(ch.get('field', '')).lower()
+                            and 'deduct' not in str(ch.get('field', '')).lower()
+                            and str(ch.get('field', '')) not in ['basicSalary', 'hra', 'allowances', 'clEncashment', 'incentives', 'grossSalary', 'netSalary', 'pf', 'esi', 'professionalTax', 'tdsDeduction']
+                        ]
+                    elif isinstance(raw_changes, dict):
+                        audit_copy['changes'] = {
+                            k: v for k, v in raw_changes.items()
+                            if 'salary' not in str(k).lower()
+                            and 'deduct' not in str(k).lower()
+                            and str(k) not in ['basicSalary', 'hra', 'allowances', 'clEncashment', 'incentives', 'grossSalary', 'netSalary', 'pf', 'esi', 'professionalTax', 'tdsDeduction']
+                        }
+                    cleaned_trail.append(audit_copy)
+                r['auditTrail'] = cleaned_trail
 
         return Response({
             'totalModifiedEmployees': len(records),
@@ -1583,10 +1756,10 @@ def export_pf_ecr(request):
             gross = float(r.get('grossSalary', 0) or 0)
             basic = float(r.get('basicSalary', 0) or 0)
             
-            # Statutory Capping at 15000
-            epf_wages = min(basic, 15000.0) if basic > 0 else 0.0
-            eps_wages = min(basic, 15000.0) if basic > 0 else 0.0
-            edli_wages = min(basic, 15000.0) if basic > 0 else 0.0
+            # Statutory Capping at 25000 (New EPFO Rules: Wage ceiling ₹25,000, Max PF ₹3,000)
+            epf_wages = min(basic, 25000.0) if basic > 0 else 0.0
+            eps_wages = min(basic, 25000.0) if basic > 0 else 0.0
+            edli_wages = min(basic, 25000.0) if basic > 0 else 0.0
             
             ee_pf = round(epf_wages * 0.12)
             er_eps = round(eps_wages * 0.0833)
@@ -1701,6 +1874,25 @@ def download_payslip_html(request, employee_id):
     Returns printable hospital payslip HTML.
     """
     try:
+        from employees.views.common.utils import is_admin_user
+        if not is_admin_user(request):
+            requester_id = (
+                request.headers.get('X-Employee-ID') or
+                request.headers.get('auth-user-id') or
+                request.headers.get('auth_user_id') or
+                request.GET.get('auth_user_id') or
+                ''
+            ).strip()
+            if not requester_id:
+                auth_header = request.headers.get('Authorization') or request.META.get('HTTP_AUTHORIZATION')
+                if auth_header:
+                    from employees.token_utils import decode_employee_token
+                    payload = decode_employee_token(auth_header)
+                    if payload and payload.get('employee_id'):
+                        requester_id = str(payload['employee_id']).strip()
+            if not requester_id or requester_id != str(employee_id).strip():
+                return Response({'error': 'Permission denied: You can only access your own payslip.'}, status=status.HTTP_403_FORBIDDEN)
+
         db = get_mongo_db()
         payroll_col = db['backend_diagnostics_payroll']
         month = request.GET.get('month') or datetime.now().strftime('%Y-%m')
@@ -1846,6 +2038,25 @@ def employee_payslip_history(request, employee_id):
     Endpoint for Mobile App: Return all monthly payslips for an employee.
     """
     try:
+        from employees.views.common.utils import is_admin_user
+        if not is_admin_user(request):
+            requester_id = (
+                request.headers.get('X-Employee-ID') or
+                request.headers.get('auth-user-id') or
+                request.headers.get('auth_user_id') or
+                request.GET.get('auth_user_id') or
+                ''
+            ).strip()
+            if not requester_id:
+                auth_header = request.headers.get('Authorization') or request.META.get('HTTP_AUTHORIZATION')
+                if auth_header:
+                    from employees.token_utils import decode_employee_token
+                    payload = decode_employee_token(auth_header)
+                    if payload and payload.get('employee_id'):
+                        requester_id = str(payload['employee_id']).strip()
+            if not requester_id or requester_id != str(employee_id).strip():
+                return Response({'error': 'Permission denied: You can only access your own payslip history.'}, status=status.HTTP_403_FORBIDDEN)
+
         db = get_mongo_db()
         payroll_col = db['backend_diagnostics_payroll']
         
@@ -2048,36 +2259,74 @@ def get_late_hours_deductions_report(request):
 
         summary['departmentsList'] = sorted(list(summary['departments'].values()), key=lambda x: x['totalDeductions'], reverse=True)
 
+        from employees.views.common.utils import is_admin_user
+        req_is_admin = is_admin_user(request)
+
+        # Sanitize salary/deductions for non-admin / HOD users
+        if not req_is_admin:
+            for item in filtered_records:
+                item['grossSalary'] = 0
+                item['dailyRate'] = 0
+                item['lateDeduction'] = 0
+            summary['totalLateDeductions'] = 0.0
+            for d in summary['departments'].values():
+                d['totalDeductions'] = 0.0
+            for d in summary.get('departmentsList', []):
+                d['totalDeductions'] = 0.0
+
         # Handle CSV Export
         if export_csv:
             response = HttpResponse(content_type='text/csv; charset=utf-8')
             response['Content-Disposition'] = f'attachment; filename="Late_Hours_Deductions_{target_month}.csv"'
             writer = csv.writer(response)
-            writer.writerow([
-                'S.No', 'Employee ID', 'Employee Name', 'Department', 'Designation',
-                'Monthly Gross (₹)', 'Daily Rate (₹)',
-                '11-30m Occasions', 'Occasion LOP (Days)',
-                '31-60m Lates (0.5d)', '>60m Lates (1.0d)', 'Heavy Late LOP (Days)',
-                'Total Late LOP (Days)', 'Late Deduction Amount (₹)', 'Status'
-            ])
-            for idx, item in enumerate(filtered_records, 1):
+            if req_is_admin:
                 writer.writerow([
-                    idx,
-                    item['employeeId'],
-                    item['employeeName'],
-                    item['department'],
-                    item['designation'],
-                    item['grossSalary'],
-                    item['dailyRate'],
-                    item['occCount'],
-                    item['occLop'],
-                    item['heavyHalfCount'],
-                    item['heavyFullCount'],
-                    item['heavyLop'],
-                    item['lateLopDays'],
-                    item['lateDeduction'],
-                    item['status']
+                    'S.No', 'Employee ID', 'Employee Name', 'Department', 'Designation',
+                    'Monthly Gross (₹)', 'Daily Rate (₹)',
+                    '11-30m Occasions', 'Occasion LOP (Days)',
+                    '31-60m Lates (0.5d)', '>60m Lates (1.0d)', 'Heavy Late LOP (Days)',
+                    'Total Late LOP (Days)', 'Late Deduction Amount (₹)', 'Status'
                 ])
+                for idx, item in enumerate(filtered_records, 1):
+                    writer.writerow([
+                        idx,
+                        item['employeeId'],
+                        item['employeeName'],
+                        item['department'],
+                        item['designation'],
+                        item['grossSalary'],
+                        item['dailyRate'],
+                        item['occCount'],
+                        item['occLop'],
+                        item['heavyHalfCount'],
+                        item['heavyFullCount'],
+                        item['heavyLop'],
+                        item['lateLopDays'],
+                        item['lateDeduction'],
+                        item['status']
+                    ])
+            else:
+                writer.writerow([
+                    'S.No', 'Employee ID', 'Employee Name', 'Department', 'Designation',
+                    '11-30m Occasions', 'Occasion LOP (Days)',
+                    '31-60m Lates (0.5d)', '>60m Lates (1.0d)', 'Heavy Late LOP (Days)',
+                    'Total Late LOP (Days)', 'Status'
+                ])
+                for idx, item in enumerate(filtered_records, 1):
+                    writer.writerow([
+                        idx,
+                        item['employeeId'],
+                        item['employeeName'],
+                        item['department'],
+                        item['designation'],
+                        item['occCount'],
+                        item['occLop'],
+                        item['heavyHalfCount'],
+                        item['heavyFullCount'],
+                        item['heavyLop'],
+                        item['lateLopDays'],
+                        item['status']
+                    ])
             return response
 
         return Response({
@@ -2101,7 +2350,7 @@ def get_employee_late_events_breakdown(request):
     Used by the Late Hours Deductions Date-Breakdown Modal in frontend.
     """
     try:
-        emp_id = str(request.GET.get('employee_id', '')).strip()
+        emp_id = str(request.GET.get('employee_id') or request.GET.get('employeeId') or '').strip()
         month_str = str(request.GET.get('month', '')).strip() or datetime.now().strftime('%Y-%m')
 
         if not emp_id:
@@ -2403,7 +2652,7 @@ def get_employee_monthly_permissions(request):
     Returns the permissions granted to an employee in a given month.
     """
     try:
-        emp_id = str(request.GET.get('employee_id', '')).strip()
+        emp_id = str(request.GET.get('employee_id') or request.GET.get('employeeId') or '').strip()
         month_str = str(request.GET.get('month', '')).strip() or datetime.now().strftime('%Y-%m')
 
         if not emp_id:

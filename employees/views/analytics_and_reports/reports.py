@@ -353,6 +353,17 @@ def roster_attendance_report(request):
                     is_late_login = (punch_in_dt - shift_start_dt).total_seconds() > 600
                     is_early_checkout = (shift_end_dt - punch_out_dt).total_seconds() > 600
 
+                    late_mins = int((punch_in_dt - shift_start_dt).total_seconds() // 60)
+                    early_mins = int((shift_end_dt - punch_out_dt).total_seconds() // 60)
+
+                    dev_parts = []
+                    if is_late_login and late_mins > 0:
+                        dev_parts.append(f"Late: {late_mins}m")
+                    if is_early_checkout and early_mins > 0:
+                        dev_parts.append(f"Early: {early_mins}m")
+                    if dev_parts:
+                        late_early_hrs = ", ".join(dev_parts)
+
                     if is_late_login and is_early_checkout:
                         status = "Late In & Early Out"
                     elif is_late_login:

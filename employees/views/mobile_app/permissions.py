@@ -279,27 +279,66 @@ def get_pending_permission_requests(request):
     Scoped by HOD's assigned departments.
     """
     try:
-        is_hod, hod_assigned_depts = get_request_user_hod_departments(request)
+        from employees.views.common.utils import get_request_user_approval_context, is_admin_user, resolve_department_filter
+
+        ctx = get_request_user_approval_context(request)
+        is_avp = ctx['is_avp']
+        is_hod = ctx['is_hod']
+        is_incharge = ctx['is_incharge']
+        is_admin = ctx['is_admin']
+        hod_assigned_depts = ctx['assigned_departments']
+        caller_id = ctx['employee_id']
+
+        if not (is_avp or is_hod or is_incharge or is_admin):
+            # Non-approver users cannot view pending approvals
+            return Response({"count": 0, "requests": []}, status=status.HTTP_200_OK)
+
+        dept_param = request.GET.get('department')
+        if (is_hod or is_incharge) and dept_param and dept_param != 'All':
+            if not hod_assigned_depts:
+                hod_assigned_depts = [dept_param]
+            elif dept_param not in hod_assigned_depts:
+                hod_assigned_depts.append(dept_param)
+
         db = get_diagnostics_db()
         requests_col = db['employees_permission_requests']
 
         query = {"status": "Pending"}
 
-        if is_hod and hod_assigned_depts:
+        if is_avp or is_admin:
+            # AVP / Admin: Can view all pending permissions
+            pass
+        elif is_hod or is_incharge:
+            if not hod_assigned_depts:
+                return Response({"count": 0, "requests": []}, status=status.HTTP_200_OK)
+
             import re
             dept_map, _, _ = get_cached_reference_maps()
             reverse_dept_map = {str(v).lower(): k for k, v in dept_map.items()}
-            all_match_terms = set(hod_assigned_depts)
+            all_match_terms = set()
             for d in hod_assigned_depts:
+                resolved_info = resolve_department_filter(d)
+                target_terms = resolved_info.get('target_terms', [])
+                for t in target_terms:
+                    all_match_terms.add(t)
+                    if t in dept_map:
+                        all_match_terms.add(dept_map[t])
+                    code = reverse_dept_map.get(str(t).lower())
+                    if code:
+                        all_match_terms.add(code)
                 code = reverse_dept_map.get(str(d).lower())
                 if code:
                     all_match_terms.add(code)
+                all_match_terms.add(str(d).strip())
 
-            regex_list = [re.compile(f"^{re.escape(term)}$", re.IGNORECASE) for term in all_match_terms]
+            regex_list = [re.compile(f"^{re.escape(term)}$", re.IGNORECASE) for term in all_match_terms if term]
             query["$or"] = [
                 {"department": {"$in": regex_list}},
                 {"department_code": {"$in": regex_list}}
             ]
+
+        if (is_hod or is_incharge) and caller_id:
+            query["employee_id"] = {"$ne": str(caller_id).strip()}
 
         cursor = list(requests_col.find(query).sort("applied_on_ts", -1))
         emp_ids = [str(r.get('employee_id', '')).strip() for r in cursor if r.get('employee_id')]

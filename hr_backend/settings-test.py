@@ -146,8 +146,22 @@ STATIC_URL = '/static/'
 # https://docs.djangoproject.com/en/3.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-CORS_ALLOW_HEADERS = [
+from corsheaders.defaults import default_headers
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
     'Authorization',
     'content-type',
-    'x-user-role'   
+    'user-role',
+    'User-Role',
+    'role',
+    'Role',
+    'department',
+    'Department',
+    'x-user-role',
+    'X-User-Role',
+    'editor-role',
+    'Editor-Role',
+    'auth-user-id',
+    'x-employee-id',
+    'branch-code',
 ]
