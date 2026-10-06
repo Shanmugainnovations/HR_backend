@@ -157,22 +157,44 @@ STATIC_URL = '/static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Email Configuration
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() == 'true'
+EMAIL_USE_SSL = os.getenv('EMAIL_USE_SSL', 'False').lower() == 'true'
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', os.getenv('EMAIL_HOST_USER', 'noreply@shanmugahospital.com'))
 
-CORS_ALLOW_HEADERS = [
+
+
+from corsheaders.defaults import default_headers
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
     'authorization',
     'Authorization',
     'token',
     'Token',
-    'content-type',
-    'accept',
-    'origin',
-    'x-requested-with',
+    'user-role',
+    'User-Role',
+    'role',
+    'Role',
+    'department',
+    'Department',
     'x-user-role',
+    'X-User-Role',
     'x-device-id',
+    'X-Device-Id',
     'x-employee-id',
+    'X-Employee-ID',
     'branch-code',
     'Branch-Code',
     'auth-user-id',
+    'Auth-User-Id',
+    'auth_user_id',
     'auth-branch-code',
+    'editor-role',
+    'Editor-Role',
 ]
 

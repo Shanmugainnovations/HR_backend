@@ -74,6 +74,7 @@ class Profile(models.Model):
     hospitalCode = models.CharField(max_length=100, default="SH001")
 
     employmentStatus = models.CharField(max_length=20, default='Active')
+    isDoctor = models.BooleanField(default=False)
     registrationNumber = models.CharField(max_length=100, null=True, blank=True)
     validityDate = models.DateField(null=True, blank=True)
 
@@ -306,6 +307,10 @@ class Register(AuditableModel):
     employee_id          = models.CharField(max_length=50, null=True, blank=True)
     department           = models.CharField(max_length=100, null=True, blank=True)
     assigned_departments = models.CharField(max_length=500, null=True, blank=True)
+    assigned_wards       = models.TextField(null=True, blank=True)
+    parent_approver_id   = models.CharField(max_length=50, null=True, blank=True)
+    supervising_hod_ids  = models.TextField(null=True, blank=True)
+    supervising_incharge_ids = models.TextField(null=True, blank=True)
     device               = models.CharField(max_length=255, unique=True, null=True, blank=True)
     fingerprint          = models.CharField(max_length=255, unique=True, null=True, blank=True)
 
@@ -431,10 +436,29 @@ class LeaveRequest(AuditableModel):
     end_date = models.DateField()
     leave_type = models.CharField(max_length=50) # e.g. Sick, Casual, Annual
     reason = models.TextField()
-    status = models.CharField(max_length=20, default='Pending') # Pending, Approved, Rejected
+    status = models.CharField(max_length=50, default='Pending') # Pending, Pending Incharge, Pending HOD, Pending AVP, Approved, Rejected
     applied_on = models.DateTimeField(auto_now_add=True)
     reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_leaves')
     reviewed_by_name = models.CharField(max_length=150, null=True, blank=True)
+
+    # 3-Tier Hierarchical Approval Tracking
+    incharge_id = models.CharField(max_length=50, null=True, blank=True)
+    incharge_name = models.CharField(max_length=150, null=True, blank=True)
+    incharge_action = models.CharField(max_length=50, null=True, blank=True)
+    incharge_remarks = models.TextField(null=True, blank=True)
+    incharge_date = models.DateTimeField(null=True, blank=True)
+
+    hod_id = models.CharField(max_length=50, null=True, blank=True)
+    hod_name = models.CharField(max_length=150, null=True, blank=True)
+    hod_action = models.CharField(max_length=50, null=True, blank=True)
+    hod_remarks = models.TextField(null=True, blank=True)
+    hod_date = models.DateTimeField(null=True, blank=True)
+
+    avp_id = models.CharField(max_length=50, null=True, blank=True)
+    avp_name = models.CharField(max_length=150, null=True, blank=True)
+    avp_action = models.CharField(max_length=50, null=True, blank=True)
+    avp_remarks = models.TextField(null=True, blank=True)
+    avp_date = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.employee_id} - {self.leave_type} - {self.status}"

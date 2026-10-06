@@ -86,6 +86,10 @@ PAGE_MAPPING = {
     '/_b_a_c_k_e_n_d/HRA/addnew_department/': 'GL-P-AND',
     '/_b_a_c_k_e_n_d/HRA/addnew_designation/': 'GL-P-AND',
     '/_b_a_c_k_e_n_d/HRA/employees_birthdays_today/': 'GL-P-EBT',
+    '/_b_a_c_k_e_n_d/HRA/send-birthday-wish/.*': 'GL-P-EBT',
+    '/_b_a_c_k_e_n_d/HRA/send-birthday-wish/': 'GL-P-EBT',
+    '/_b_a_c_k_e_n_d/HRA/send_birthday_wish/.*': 'GL-P-EBT',
+    '/_b_a_c_k_e_n_d/HRA/send_birthday_wish/': 'GL-P-EBT',
 
     # Fallback non-prefixed routes
     '/adminreg/.*': 'GL-P-EAD',

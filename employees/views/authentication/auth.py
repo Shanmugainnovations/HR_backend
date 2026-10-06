@@ -97,29 +97,57 @@ def registration(request):
                 if mongo_uri:
                     _client = MongoClient(mongo_uri)
                     _global_db = _client[global_db_name]
-                    global_hods = list(_global_db['backend_diagnostics_profile'].find({
+                    global_approvers = list(_global_db['backend_diagnostics_profile'].find({
                         '$or': [
-                            {'primaryRole': 'HR-R-HOD'},
-                            {'primaryRole': {'$regex': 'HR-R-HOD', '$options': 'i'}},
-                            {'additionalRoles': 'HR-R-HOD'},
-                            {'additionalRoles': {'$elemMatch': {'$regex': 'HR-R-HOD', '$options': 'i'}}},
-                            {'additionalRoles': {'$regex': 'HR-R-HOD', '$options': 'i'}}
+                            {
+                                'primaryRole': {
+                                    '$in': ['HR-R-HOD', 'HR-R-AVP', 'HR-R-INC']
+                                }
+                            },
+                            {
+                                'additionalRoles': {
+                                    '$in': ['HR-R-HOD', 'HR-R-AVP', 'HR-R-INC']
+                                }
+                            }
                         ]
                     }))
-                    for gh in global_hods:
-                        emp_id = str(gh.get('employeeId') or '').strip()
+                    for ga in global_approvers:
+                        emp_id = str(ga.get('employeeId') or '').strip()
                         if not emp_id:
                             continue
-                        name = gh.get('employeeName') or gh.get('name') or emp_id
-                        dept = gh.get('department') or ''
+                        name = ga.get('employeeName') or ga.get('name') or emp_id
+                        dept = ga.get('department') or ''
 
-                        # Find highest integer ID in Register table
+                        # Determine matching role
+                        roles_list = []
+                        if ga.get('primaryRole'):
+                            roles_list.append(str(ga.get('primaryRole')))
+                        if isinstance(ga.get('additionalRoles'), list):
+                            roles_list.extend([str(r) for r in ga.get('additionalRoles')])
+                        elif ga.get('additionalRoles'):
+                            roles_list.append(str(ga.get('additionalRoles')))
+
+                        if 'HR-R-AVP' in roles_list:
+                            detected_role = 'HR-R-AVP'
+                        elif 'HR-R-INC' in roles_list:
+                            detected_role = 'HR-R-INC'
+                        elif 'HR-R-HOD' in roles_list:
+                            detected_role = 'HR-R-HOD'
+                        else:
+                            continue
+
                         existing_user = users_col.find_one({'employee_id': emp_id})
                         if existing_user:
                             users_col.update_one(
                                 {'_id': existing_user['_id']},
-                                {'$set': {'role': 'HR-R-HOD'}}
+                                {'$set': {'role': detected_role}}
                             )
+                            # Also update Register table
+                            reg_items = Register.objects.filter(employee_id=emp_id)
+                            for reg_item in reg_items:
+                                if reg_item.role != detected_role:
+                                    reg_item.role = detected_role
+                                    reg_item.save(update_fields=['role'])
                         else:
                             last_user = users_col.find().sort('id', -1).limit(1)
                             max_id = 1
@@ -132,14 +160,30 @@ def registration(request):
                                 'name': name,
                                 'employee_id': emp_id,
                                 'department': dept,
-                                'role': 'HR-R-HOD',
+                                'role': detected_role,
                                 'password': 'Password@123',
                                 'confirmPassword': 'Password@123'
                             })
+                            Register.objects.create(
+                                id=max_id,
+                                name=name,
+                                employee_id=emp_id,
+                                department=dept,
+                                role=detected_role,
+                                password='Password@123',
+                                confirmPassword='Password@123'
+                            )
             except Exception as sync_err:
-                print(f"HR-R-HOD sync notice: {sync_err}")
+                print(f"Approver sync notice: {sync_err}")
 
-            raw_users = list(Register.objects.all().order_by('-id').values())
+            approvers_only = request.GET.get('approvers_only') == 'true'
+            if approvers_only:
+                raw_users = list(Register.objects.filter(
+                    role__in=['HR-R-HOD', 'HR-R-AVP', 'HR-R-INC']
+                ).order_by('-id').values())
+            else:
+                raw_users = list(Register.objects.all().order_by('-id').values())
+
             # Deduplicate by employee_id and serialize ObjectId to string
             seen_emp = set()
             clean_users = []
@@ -251,7 +295,8 @@ def registration(request):
 
             fields = [
                 "name", "employee_id", "department", "assigned_departments",
-                "role", "device", "allowed_ip", "fingerprint"
+                "assigned_wards", "parent_approver_id", "supervising_hod_ids",
+                "supervising_incharge_ids", "role", "device", "allowed_ip", "fingerprint"
             ]
 
             for f in fields:
@@ -292,6 +337,10 @@ def registration(request):
                         {'$set': {
                             'department': str(user.department or ''),
                             'assigned_departments': str(getattr(user, 'assigned_departments', '') or ''),
+                            'assigned_wards': str(getattr(user, 'assigned_wards', '') or ''),
+                            'parent_approver_id': str(getattr(user, 'parent_approver_id', '') or ''),
+                            'supervising_hod_ids': str(getattr(user, 'supervising_hod_ids', '') or ''),
+                            'supervising_incharge_ids': str(getattr(user, 'supervising_incharge_ids', '') or ''),
                             'role': str(user.role or '')
                         }}
                     )
@@ -302,20 +351,39 @@ def registration(request):
                         _client = MongoClient(mongo_uri)
                         _global_db = _client[global_db_name]
                         
-                        profile_update = {
-                            'primaryRole': 'HR-R-HOD' if 'HOD' in str(user.role) else ('Admin' if user.role == 'Admin' else 'Employee')
-                        }
+                        role_str = str(user.role or '').upper()
+                        if 'AVP' in role_str or role_str == 'HR-R-AVP':
+                            target_approver_role = 'HR-R-AVP'
+                        elif 'INC' in role_str or 'INCHARGE' in role_str or role_str == 'HR-R-INC':
+                            target_approver_role = 'HR-R-INC'
+                        elif 'HOD' in role_str or role_str == 'HR-R-HOD':
+                            target_approver_role = 'HR-R-HOD'
+                        elif 'ADMIN' in role_str:
+                            target_approver_role = 'Admin'
+                        else:
+                            target_approver_role = 'Employee'
+
+                        profile_update = {}
                         if getattr(user, 'assigned_departments', None) is not None:
                             profile_update['assigned_departments'] = str(user.assigned_departments or '')
+                        if getattr(user, 'parent_approver_id', None) is not None:
+                            profile_update['parent_approver_id'] = str(user.parent_approver_id or '')
                         
                         # Only update personal department if explicitly provided and not an HOD department allocation
                         if 'department' in request.data and 'assigned_departments' not in request.data:
                             profile_update['department'] = str(user.department or '')
 
-                        _global_db['backend_diagnostics_profile'].update_one(
-                            {'$or': [{'employeeId': emp_str}, {'employeeId': int(emp_str) if emp_str.isdigit() else -1}]},
-                            {'$set': profile_update}
-                        )
+                        update_ops = {}
+                        if profile_update:
+                            update_ops['$set'] = profile_update
+                        if target_approver_role in ['HR-R-HOD', 'HR-R-AVP', 'HR-R-INC']:
+                            update_ops['$addToSet'] = {'additionalRoles': target_approver_role}
+
+                        if update_ops:
+                            _global_db['backend_diagnostics_profile'].update_one(
+                                {'$or': [{'employeeId': emp_str}, {'employeeId': int(emp_str) if emp_str.isdigit() else -1}]},
+                                update_ops
+                            )
                 except Exception as sync_err:
                     print(f"Profile sync notice: {sync_err}")
 

@@ -13,7 +13,9 @@ from .master_views import (
 from .birthdays import (
     get_todays_birthdays,
     get_monthly_birthdays,
-    export_birthdays_csv
+    export_birthdays_csv,
+    trigger_birthday_notifications_api,
+    send_birthday_wish_api
 )
 from .profile_views import (
     check_employee_id,
@@ -24,6 +26,7 @@ from .profile_views import (
     upload_file,
     serve_file,
     update_user_status,
+    resend_employee_email,
 )
 
 

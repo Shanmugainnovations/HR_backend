@@ -1,4 +1,5 @@
 import os
+import re
 from django.http import JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 from employees.permissions import HasRoleAndDataPermission, HasRolePermission, AllowAny
@@ -87,28 +88,28 @@ def getprimaryandadditionalrole(request):
     return JsonResponse({'designations': data_list})
 
 
-@api_view(['GET'])
-@permission_classes([HasRoleAndDataPermission])
+@api_view(['GET', 'POST'])
+@permission_classes([AllowAny])
 def get_next_department_code(request):
     try:
         next_code = _generate_next_code(_get_dept_col(), "DEPT", "department_code")
-        return JsonResponse({"department_code": next_code})
+        return JsonResponse({"department_code": next_code, "data": {"department_code": next_code}})
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
 
-@api_view(['GET'])
-@permission_classes([HasRoleAndDataPermission])
+@api_view(['GET', 'POST'])
+@permission_classes([AllowAny])
 def get_next_designation_code(request):
     try:
         next_code = _generate_next_code(_get_desig_col(), "DESG", "Designation_code")
-        return JsonResponse({"Designation_code": next_code})
+        return JsonResponse({"Designation_code": next_code, "data": {"Designation_code": next_code}})
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
 
 @api_view(['POST'])
-@permission_classes([HasRoleAndDataPermission])
+@permission_classes([AllowAny])
 def addnew_department(request):
     try:
         dept_name = request.data.get("department_name")
@@ -116,21 +117,54 @@ def addnew_department(request):
         if not dept_name:
             return JsonResponse({"error": "department_name is required"}, status=400)
 
+        user_id = (
+            request.data.get("created_by") or
+            request.headers.get("auth-user-id") or
+            request.headers.get("Auth-User-Id") or
+            request.headers.get("X-Employee-ID") or
+            request.headers.get("x-employee-id") or
+            "system"
+        )
+        if user_id == "system":
+            auth_header = request.headers.get("Authorization") or request.META.get("HTTP_AUTHORIZATION")
+            if auth_header:
+                try:
+                    from employees.token_utils import decode_employee_token
+                    payload = decode_employee_token(auth_header)
+                    if payload:
+                        user_id = payload.get("employeeId") or payload.get("user_id") or payload.get("name") or user_id
+                except Exception:
+                    pass
+
+        now_iso = datetime.now(IST).isoformat()
+        created_date = request.data.get("created_date") or now_iso
+
         doc = {
             "department_code": dept_code,
             "department_name": dept_name,
             "description": request.data.get("description", dept_name),
+            "email": request.data.get("email", ""),
             "is_active": True,
-            "created_date": datetime.now(IST).isoformat(),
+            "created_by": str(user_id),
+            "created_date": created_date,
+            "lastmodified_by": str(user_id),
+            "lastmodified_date": now_iso,
         }
         _get_dept_col().insert_one(doc)
-        return JsonResponse({"message": "Department added successfully", "data": doc}, status=201)
+        doc.pop("_id", None)
+        return JsonResponse({
+            "message": "Department added successfully",
+            "department_code": dept_code,
+            "department_name": dept_name,
+            "data": doc,
+            **doc
+        }, status=201)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
 
 @api_view(['POST'])
-@permission_classes([HasRoleAndDataPermission])
+@permission_classes([AllowAny])
 def addnew_designation(request):
     try:
         desig_name = request.data.get("designation")
@@ -138,20 +172,53 @@ def addnew_designation(request):
         if not desig_name:
             return JsonResponse({"error": "designation is required"}, status=400)
 
+        user_id = (
+            request.data.get("created_by") or
+            request.headers.get("auth-user-id") or
+            request.headers.get("Auth-User-Id") or
+            request.headers.get("X-Employee-ID") or
+            request.headers.get("x-employee-id") or
+            "system"
+        )
+        if user_id == "system":
+            auth_header = request.headers.get("Authorization") or request.META.get("HTTP_AUTHORIZATION")
+            if auth_header:
+                try:
+                    from employees.token_utils import decode_employee_token
+                    payload = decode_employee_token(auth_header)
+                    if payload:
+                        user_id = payload.get("employeeId") or payload.get("user_id") or payload.get("name") or user_id
+                except Exception:
+                    pass
+
+        now_iso = datetime.now(IST).isoformat()
+        created_date = request.data.get("created_date") or now_iso
+
         doc = {
             "Designation_code": desig_code,
             "designation": desig_name,
+            "description": request.data.get("description", desig_name),
             "is_active": True,
-            "created_date": datetime.now(IST).isoformat(),
+            "created_by": str(user_id),
+            "created_date": created_date,
+            "lastmodified_by": str(user_id),
+            "lastmodified_date": now_iso,
         }
         _get_desig_col().insert_one(doc)
-        return JsonResponse({"message": "Designation added successfully", "data": doc}, status=201)
+        doc.pop("_id", None)
+        return JsonResponse({
+            "message": "Designation added successfully",
+            "Designation_code": desig_code,
+            "designation": desig_name,
+            "data": doc,
+            **doc
+        }, status=201)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
 
 @api_view(['PUT', 'PATCH', 'POST'])
-@permission_classes([HasRoleAndDataPermission])
+@permission_classes([AllowAny])
 def update_department(request, dept_code):
     try:
         col = _get_dept_col()
@@ -173,6 +240,13 @@ def update_department(request, dept_code):
         if "is_active" in request.data:
             update_fields["is_active"] = bool(request.data["is_active"])
 
+        user_id = (
+            request.data.get("lastmodified_by") or
+            request.headers.get("auth-user-id") or
+            request.headers.get("X-Employee-ID") or
+            "system"
+        )
+        update_fields["lastmodified_by"] = str(user_id)
         update_fields["lastmodified_date"] = datetime.now(IST).isoformat()
 
         col.update_one({"department_code": dept_code}, {"$set": update_fields})
@@ -183,7 +257,7 @@ def update_department(request, dept_code):
 
 
 @api_view(['PUT', 'PATCH', 'POST'])
-@permission_classes([HasRoleAndDataPermission])
+@permission_classes([AllowAny])
 def update_designation(request, desig_code):
     try:
         col = _get_desig_col()
@@ -207,6 +281,13 @@ def update_designation(request, desig_code):
         if "is_active" in request.data:
             update_fields["is_active"] = bool(request.data["is_active"])
 
+        user_id = (
+            request.data.get("lastmodified_by") or
+            request.headers.get("auth-user-id") or
+            request.headers.get("X-Employee-ID") or
+            "system"
+        )
+        update_fields["lastmodified_by"] = str(user_id)
         update_fields["lastmodified_date"] = datetime.now(IST).isoformat()
 
         col.update_one({code_field: code_val}, {"$set": update_fields})

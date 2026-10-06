@@ -13,6 +13,75 @@ except Exception:
     IST = timezone(timedelta(hours=5, minutes=30))
 
 
+def trigger_birthday_push_notifications(today_birthdays, today_str):
+    """
+    Checks today's birthdays and sends:
+    1. A celebratory push notification & in-app message to each employee celebrating their birthday today.
+    Idempotent: Only sends once per employee per birthday date (YYYY-MM-DD).
+    """
+    if not today_birthdays:
+        return 0
+
+    sent_count = 0
+    try:
+        from employees.views.mobile_app.notifications import get_notifications_collection, send_expo_push_notification
+        col = get_notifications_collection()
+        now_dt = datetime.now()
+
+        for bday in today_birthdays:
+            emp_id = str(bday.get('employeeId', '')).strip()
+            emp_name = bday.get('employeeName', 'Colleague')
+            if not emp_id:
+                continue
+
+            emp_match = [emp_id]
+            if emp_id.isdigit():
+                emp_match.append(int(emp_id))
+
+            # Idempotency check: Don't send multiple times on the same date
+            already_sent = col.find_one({
+                "employee_id": {"$in": emp_match},
+                "category": "birthday",
+                "birthday_date": today_str
+            })
+
+            if not already_sent:
+                title = f"Happy Birthday, {emp_name}! 🎂🎉"
+                message = f"Dear {emp_name}, Shanmuga HR wishes you a very Happy Birthday! May your day and year ahead be filled with happiness, health, and great success! 🎈✨"
+
+                # 1. In-App Notification Record
+                col.insert_one({
+                    "employee_id": str(emp_id),
+                    "title": title,
+                    "message": message,
+                    "category": "birthday",
+                    "birthday_date": today_str,
+                    "is_read": False,
+                    "action_url": "/profile",
+                    "created_at": now_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                    "created_at_ts": now_dt.timestamp()
+                })
+
+                # 2. Remote Expo Push Notification to Employee's Mobile App
+                try:
+                    send_expo_push_notification(
+                        employee_ids=[emp_id],
+                        title=title,
+                        body=f"Shanmuga HR wishes you a wonderful and joyful Birthday! Tap to celebrate 🎈",
+                        data={"category": "birthday", "screen": "Profile"}
+                    )
+                except Exception as push_err:
+                    print(f"[Birthday] Push notification error for {emp_id}:", push_err)
+
+                sent_count += 1
+                print(f"[Birthday] Birthday push notification & in-app wish sent to {emp_name} ({emp_id})")
+
+    except Exception as e:
+        print("[Birthday] Error triggering birthday notifications:", e)
+
+    return sent_count
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_todays_birthdays(request):
@@ -139,6 +208,13 @@ def get_todays_birthdays(request):
         # Sort upcoming by days_left
         upcoming_birthdays.sort(key=lambda x: x.get('days_left', 99))
 
+        # Auto-send birthday push notifications & in-app wishes for today's celebrants
+        if today_birthdays:
+            try:
+                trigger_birthday_push_notifications(today_birthdays, today.strftime('%Y-%m-%d'))
+            except Exception as auto_notif_err:
+                print("[Birthday] Auto-notification error:", auto_notif_err)
+
         return JsonResponse({
             "is_my_birthday": is_my_birthday,
             "today": today_birthdays,
@@ -176,6 +252,112 @@ def _parse_dob(dob_raw):
             except Exception:
                 continue
     return None
+
+
+@api_view(['POST', 'GET'])
+@permission_classes([AllowAny])
+def trigger_birthday_notifications_api(request):
+    """
+    Dedicated endpoint to manually or cron-trigger birthday push notifications.
+    Can be called daily via cron or external scheduler.
+    """
+    try:
+        today = datetime.now(IST).date()
+        today_str = today.strftime('%Y-%m-%d')
+        client = get_mongo_client()
+        db_name = os.environ.get('GLOBAL_DB_NAME', 'Global')
+        db = client[db_name]
+
+        profiles = list(db['backend_diagnostics_profile'].find({}, {
+            'employeeId': 1, 'employeeName': 1, 'dateOfBirth': 1, '_id': 0
+        }))
+        inactive_ids = get_inactive_employee_ids()
+
+        today_celebrants = []
+        for prof in profiles:
+            emp_id = str(prof.get('employeeId') or '').strip()
+            if not emp_id or emp_id in inactive_ids:
+                continue
+            dob_raw = prof.get('dateOfBirth')
+            dob_date = _parse_dob(dob_raw)
+            if dob_date and dob_date.month == today.month and dob_date.day == today.day:
+                today_celebrants.append({
+                    "employeeId": emp_id,
+                    "employeeName": prof.get('employeeName') or 'Employee'
+                })
+
+        sent = trigger_birthday_push_notifications(today_celebrants, today_str)
+        return JsonResponse({
+            "success": True,
+            "date": today_str,
+            "celebrants_count": len(today_celebrants),
+            "notifications_dispatched": sent,
+            "celebrants": today_celebrants
+        })
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def send_birthday_wish_api(request):
+    """
+    Sends a birthday wish notification from one colleague to another.
+    Creates an in-app notification doc and dispatches a real-time Expo push notification.
+    """
+    try:
+        sender_id = str(request.data.get('sender_id') or getattr(request, 'authenticated_employee_id', '') or '').strip()
+        sender_name = request.data.get('sender_name') or 'A Colleague'
+        receiver_id = str(request.data.get('receiver_id') or '').strip()
+        receiver_name = request.data.get('receiver_name') or 'Colleague'
+        custom_message = request.data.get('message')
+
+        if not receiver_id:
+            return JsonResponse({"error": "receiver_id is required"}, status=400)
+
+        if sender_id and sender_id == receiver_id:
+            return JsonResponse({"error": "You cannot wish yourself"}, status=400)
+
+        from employees.views.mobile_app.notifications import get_notifications_collection, send_expo_push_notification
+        col = get_notifications_collection()
+        now_dt = datetime.now()
+
+        title = f"{sender_name} wished you a Happy Birthday! 🎂🎉"
+        body = custom_message or f"{sender_name} sent you warm birthday wishes! Wishing you a fantastic and successful year ahead! 🎈✨"
+
+        # 1. Store in-app notification in MongoDB for the receiver
+        col.insert_one({
+            "employee_id": str(receiver_id),
+            "sender_id": str(sender_id) if sender_id else "",
+            "sender_name": sender_name,
+            "title": title,
+            "message": body,
+            "category": "birthday_wish",
+            "is_read": False,
+            "action_url": "/profile",
+            "created_at": now_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            "created_at_ts": now_dt.timestamp()
+        })
+
+        # 2. Send Expo push notification to receiver's mobile device
+        try:
+            send_expo_push_notification(
+                employee_ids=[receiver_id],
+                title=title,
+                body=body,
+                data={"category": "birthday_wish", "sender_id": sender_id, "screen": "Profile"}
+            )
+        except Exception as push_err:
+            print(f"[Birthday Wish] Error sending push notification to {receiver_id}:", push_err)
+
+        return JsonResponse({
+            "success": True,
+            "message": f"Birthday wish sent to {receiver_name} successfully! 🎉"
+        }, status=200)
+
+    except Exception as e:
+        print("[Birthday Wish] Server error:", e)
+        return JsonResponse({"error": str(e)}, status=500)
 
 
 def _calculate_days_until(dob_date, today):
