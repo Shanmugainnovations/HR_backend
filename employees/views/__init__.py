@@ -137,6 +137,7 @@ from .payroll.payroll_views import (
     export_bank_transfer_sheet,
     export_pf_ecr,
     export_esi_return,
+    export_payroll_csv,
     download_payslip_html,
     employee_payslip_history,
     get_late_hours_deductions_report,
@@ -144,5 +145,12 @@ from .payroll.payroll_views import (
     apply_employee_permission,
     revoke_employee_permission,
     get_employee_monthly_permissions,
-    manual_deduction_action
+    manual_deduction_action,
+    purge_draft_payrolls
+)
+from .attendance_management.attendance_approval_views import (
+    get_attendance_approval_summary,
+    get_department_staff_attendance_summary,
+    department_attendance_action,
+    regularize_employee_attendance
 )

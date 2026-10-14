@@ -24,7 +24,7 @@ def resolve_leave_department(leave_obj, reg_map=None):
     return resolved
 
 @api_view(['GET', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def leave_type_list_create(request):
 
     if request.method == 'GET':
@@ -44,7 +44,7 @@ def leave_type_list_create(request):
 
 
 @api_view(['GET', 'PUT', 'DELETE'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def leave_type_detail(request, pk):
     try:
         try:
@@ -71,7 +71,7 @@ def leave_type_detail(request, pk):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def apply_leave(request):
     try:
         employee_id = getattr(request, 'authenticated_employee_id', None) or request.data.get('employee_id')
@@ -169,7 +169,7 @@ def apply_leave(request):
         return Response({"error": str(e)}, status=500)
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def my_leaves(request):
     try:
         employee_id = getattr(request, 'authenticated_employee_id', None) or request.GET.get('employee_id')
@@ -202,7 +202,7 @@ def my_leaves(request):
         return Response({"error": str(e)}, status=500)
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def pending_leaves(request):
     try:
         from django.db.models import Q
@@ -344,7 +344,7 @@ def pending_leaves(request):
         return Response({"error": str(e)}, status=500)
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def leave_history(request):
     try:
         status_filter = request.GET.get('status')
@@ -359,9 +359,30 @@ def leave_history(request):
             leaves = leaves.filter(status=status_filter)
         if employee_name:
             leaves = leaves.filter(employee_name__icontains=employee_name)
-        if department and department != 'All':
-            from django.db.models import Q
-            from employees.views.common.utils import resolve_department_filter
+        from django.db.models import Q
+        from employees.views.common.utils import get_request_user_hod_departments, resolve_department_filter
+
+        is_supervisor, supervisor_assigned_depts = get_request_user_hod_departments(request)
+
+        if is_supervisor:
+            if supervisor_assigned_depts:
+                target_depts = [department] if (department and department != 'All') else supervisor_assigned_depts
+                target_terms = set()
+                matching_emp_ids = set()
+                for d in target_depts:
+                    d_ctx = resolve_department_filter(d)
+                    target_terms.update(d_ctx.get('target_terms', []))
+                    matching_emp_ids.update(d_ctx.get('matching_employee_ids') or set())
+                
+                q_dept = Q()
+                if matching_emp_ids:
+                    q_dept |= Q(employee_id__in=matching_emp_ids)
+                for t in target_terms:
+                    q_dept |= Q(department__icontains=t) | Q(department_id__icontains=t)
+                leaves = leaves.filter(q_dept)
+            else:
+                leaves = leaves.none()
+        elif department and department != 'All':
             dept_ctx = resolve_department_filter(department)
             target_terms = dept_ctx['target_terms']
             matching_emp_ids = dept_ctx['matching_employee_ids'] or set()
@@ -410,7 +431,7 @@ def leave_history(request):
         return Response({"error": str(e)}, status=500)
 
 @api_view(['PUT', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def update_leave_status(request, leave_id):
     try:
         from employees.views.common.utils import get_request_user_approval_context
@@ -600,7 +621,7 @@ def update_leave_status(request, leave_id):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_leave_balances(request):
     """
     Retrieve employee leave balances from employees_leave_balance collection.
@@ -741,14 +762,16 @@ def get_leave_balances(request):
                     
                     tkey = 'EL'
                     if 'NH' in ltype or 'HOLIDAY' in ltype or 'PH' in ltype:
-                        tkey = 'NH'
+                        tkey = 'PH'
                     elif 'SL' in ltype or 'SICK' in ltype or 'CL' in ltype or 'CASUAL' in ltype or 'C' in ltype:
                         tkey = 'SL'
 
                     if eid not in taken_summary:
-                        taken_summary[eid] = {'total_taken': 0.0, 'EL': 0.0, 'NH': 0.0, 'SL': 0.0}
+                        taken_summary[eid] = {'total_taken': 0.0, 'EL': 0.0, 'NH': 0.0, 'PH': 0.0, 'SL': 0.0}
                     taken_summary[eid]['total_taken'] += days
                     taken_summary[eid][tkey] = taken_summary[eid].get(tkey, 0.0) + days
+                    if tkey == 'PH':
+                        taken_summary[eid]['NH'] = taken_summary[eid].get('NH', 0.0) + days
             except Exception as t_err:
                 print("Error computing taken leaves summary:", t_err)
 
@@ -764,7 +787,7 @@ def get_leave_balances(request):
             lb = doc.get('leave_balances', {})
 
             el_elig = float(ee.get('EL', ee.get('el', 12.0)))
-            nh_elig = float(ee.get('NH', ee.get('nh', 9.0)))
+            nh_elig = float(ee.get('PH', ee.get('ph', ee.get('NH', ee.get('nh', 9.0)))))
             sl_elig = float(ee.get('SL', ee.get('sl', 12.0)))
             tot_elig = float(ee.get('total_eligible', el_elig + nh_elig + sl_elig))
 
@@ -772,17 +795,17 @@ def get_leave_balances(request):
             lt_doc = doc.get('leaves_taken', {})
             if lt_doc and ('EL' in lt_doc or 'total_taken' in lt_doc):
                 el_sheet_taken = float(lt_doc.get('EL', 0.0))
-                nh_sheet_taken = float(lt_doc.get('NH', 0.0))
+                nh_sheet_taken = float(lt_doc.get('PH', lt_doc.get('ph', lt_doc.get('NH', 0.0))))
                 sl_sheet_taken = float(lt_doc.get('SL', 0.0))
             else:
                 el_sheet_taken = float(lb.get('EL', lb.get('el', 0.0)))
-                nh_sheet_taken = float(lb.get('NH', lb.get('nh', 0.0)))
+                nh_sheet_taken = float(lb.get('PH', lb.get('ph', lb.get('NH', lb.get('nh', 0.0)))))
                 sl_sheet_taken = float(lb.get('SL', lb.get('sl', 0.0)))
 
-            req_taken = taken_summary.get(eid, {'total_taken': 0.0, 'EL': 0.0, 'NH': 0.0, 'SL': 0.0})
+            req_taken = taken_summary.get(eid, {'total_taken': 0.0, 'EL': 0.0, 'NH': 0.0, 'PH': 0.0, 'SL': 0.0})
 
             el_taken_tot = round(el_sheet_taken + req_taken.get('EL', 0.0), 2)
-            nh_taken_tot = round(nh_sheet_taken + req_taken.get('NH', 0.0), 2)
+            nh_taken_tot = round(nh_sheet_taken + req_taken.get('PH', req_taken.get('NH', 0.0)), 2)
             sl_taken_tot = round(sl_sheet_taken + req_taken.get('SL', 0.0), 2)
             total_taken_tot = round(el_taken_tot + nh_taken_tot + sl_taken_tot, 2)
 
@@ -790,6 +813,7 @@ def get_leave_balances(request):
                 'total_taken': total_taken_tot,
                 'EL': el_taken_tot,
                 'NH': nh_taken_tot,
+                'PH': nh_taken_tot,
                 'SL': sl_taken_tot
             }
 
@@ -801,8 +825,16 @@ def get_leave_balances(request):
             doc['leave_balances'] = {
                 'EL': el_rem,
                 'NH': nh_rem,
+                'PH': nh_rem,
                 'SL': sl_rem,
                 'total_available': tot_rem
+            }
+            doc['eligible_entitlement'] = {
+                'EL': el_elig,
+                'NH': nh_elig,
+                'PH': nh_elig,
+                'SL': sl_elig,
+                'total_eligible': tot_elig
             }
             records.append(doc)
 
@@ -813,10 +845,10 @@ def get_leave_balances(request):
             writer = csv.writer(response)
             writer.writerow([
                 'S.No', 'Employee ID', 'Employee Name', 'Department', 'Department Code',
-                'Designation', 'DOJ', 'Total Allocated Leaves', 'Total Leaves Used', 'Total Pending Balance',
-                'EL Pending', 'EL Used', 'EL Total',
-                'NH Pending', 'NH Used', 'NH Total',
-                'SL Pending', 'SL Used', 'SL Total'
+                'Designation', 'DOJ', 'Total Allocated Leaves', 'Total Leaves Used', 'Total Remaining Balance',
+                'EL Remaining', 'EL Used', 'EL Total',
+                'PH Remaining', 'PH Used', 'PH Total',
+                'SL Remaining', 'SL Used', 'SL Total'
             ])
             for idx, r in enumerate(records, 1):
                 lb = r.get('leave_balances', {})
@@ -836,9 +868,9 @@ def get_leave_balances(request):
                     lb.get('EL', 0),
                     lt.get('EL', 0),
                     ee.get('EL', 12),
-                    lb.get('NH', 0),
-                    lt.get('NH', 0),
-                    ee.get('NH', 9),
+                    lb.get('PH', lb.get('NH', 0)),
+                    lt.get('PH', lt.get('NH', 0)),
+                    ee.get('PH', ee.get('NH', 9)),
                     lb.get('SL', 0),
                     lt.get('SL', 0),
                     ee.get('SL', 12)
@@ -1100,7 +1132,7 @@ def provision_employee_leave_balance(emp_id, profile_doc=None, force_recalculate
         quota, matched_policy = resolve_employee_leave_quota(profile_doc, db=db)
 
         # Approved leaves taken calculation
-        taken = {'EL': 0.0, 'NH': 0.0, 'SL': 0.0, 'total_taken': 0.0}
+        taken = {'EL': 0.0, 'NH': 0.0, 'PH': 0.0, 'SL': 0.0, 'total_taken': 0.0}
         try:
             from employees.models import LeaveRequest
             approved_leaves = LeaveRequest.objects.filter(employee_id=target_id, status='Approved')
@@ -1109,18 +1141,25 @@ def provision_employee_leave_balance(emp_id, profile_doc=None, force_recalculate
                 ltype = str(req.leave_type or '').upper().strip()
                 tkey = 'EL'
                 if 'NH' in ltype or 'HOLIDAY' in ltype or 'PH' in ltype:
-                    tkey = 'NH'
+                    tkey = 'PH'
                 elif 'SL' in ltype or 'SICK' in ltype or 'CL' in ltype or 'CASUAL' in ltype:
                     tkey = 'SL'
                 taken['total_taken'] += days
-                taken[tkey] += days
+                taken[tkey] = taken.get(tkey, 0.0) + days
+                if tkey == 'PH':
+                    taken['NH'] = taken.get('NH', 0.0) + days
         except Exception as e:
             print(f"Error calculating taken leaves for {target_id}: {e}")
 
+        nh_quota = quota.get('PH', quota.get('NH', 9.0))
         el_bal = max(0.0, quota['EL'] - taken['EL'])
-        nh_bal = max(0.0, quota['NH'] - taken['NH'])
+        nh_bal = max(0.0, nh_quota - taken['PH'])
         sl_bal = max(0.0, quota['SL'] - taken['SL'])
         total_avail = round(el_bal + nh_bal + sl_bal, 2)
+
+        quota_copy = dict(quota)
+        quota_copy['PH'] = nh_quota
+        quota_copy['NH'] = nh_quota
 
         now = datetime.now()
         existing = coll.find_one({'employee_id': target_id})
@@ -1139,10 +1178,11 @@ def provision_employee_leave_balance(emp_id, profile_doc=None, force_recalculate
                 'as_of_year': now.year,
                 'policy_id': str(matched_policy.get('_id')) if matched_policy else None,
                 'policy_name': matched_policy.get('policy_name') if matched_policy else 'Default Policy',
-                'eligible_entitlement': quota,
+                'eligible_entitlement': quota_copy,
                 'leave_balances': {
                     'EL': el_bal,
                     'NH': nh_bal,
+                    'PH': nh_bal,
                     'SL': sl_bal,
                     'total_available': total_avail
                 },
@@ -1165,10 +1205,11 @@ def provision_employee_leave_balance(emp_id, profile_doc=None, force_recalculate
             if force_recalculate:
                 update_payload['policy_id'] = str(matched_policy.get('_id')) if matched_policy else None
                 update_payload['policy_name'] = matched_policy.get('policy_name') if matched_policy else 'Default Policy'
-                update_payload['eligible_entitlement'] = quota
+                update_payload['eligible_entitlement'] = quota_copy
                 update_payload['leave_balances'] = {
                     'EL': el_bal,
                     'NH': nh_bal,
+                    'PH': nh_bal,
                     'SL': sl_bal,
                     'total_available': total_avail
                 }
@@ -1182,7 +1223,7 @@ def provision_employee_leave_balance(emp_id, profile_doc=None, force_recalculate
 
 
 @api_view(['GET', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def leave_policies(request):
     """
     GET: List all configured leave policy rules, along with department/designation lookup lists and stats.
@@ -1320,7 +1361,7 @@ def leave_policies(request):
 
 
 @api_view(['PUT', 'DELETE'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def leave_policy_detail(request, policy_id):
     """
     PUT: Update an existing policy rule.
@@ -1398,7 +1439,7 @@ def leave_policy_detail(request, policy_id):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def sync_all_leave_balances(request):
     """
     POST: Synchronizes/re-provisions leave balances for all active employee profiles

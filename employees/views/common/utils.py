@@ -349,6 +349,7 @@ def get_request_user_hod_departments(request):
         request.headers.get('auth-user-id') or
         request.headers.get('X-Employee-ID') or
         request.headers.get('auth_user_id') or
+        getattr(request, 'authenticated_employee_id', None) or
         request.GET.get('auth_user_id') or
         request.GET.get('userId') or
         request.GET.get('employee_id') or
@@ -362,8 +363,8 @@ def get_request_user_hod_departments(request):
         if auth_header:
             from employees.token_utils import decode_employee_token
             payload = decode_employee_token(auth_header)
-            if payload and payload.get('employee_id'):
-                auth_user_id = payload['employee_id']
+            if payload:
+                auth_user_id = payload.get('employee_id') or payload.get('aud')
 
     if not auth_user_id:
         return False, []
@@ -374,9 +375,9 @@ def get_request_user_hod_departments(request):
     if not user:
         return False, []
 
-    role = str(user.role or '').strip()
-    is_hod = 'HOD' in role.upper()
-    if not is_hod:
+    role = str(user.role or '').strip().upper()
+    is_admin = ('ADMIN' in role or role in ['HR', 'HR-ADMIN', 'SD-R-HR']) and not any(k in role for k in ['AVP', 'HOD', 'INC', 'INCHARGE'])
+    if is_admin:
         return False, []
 
     assigned = getattr(user, 'assigned_departments', '') or user.department or ''
@@ -566,6 +567,114 @@ def is_admin_user(request):
         return True
 
     return False
+
+
+# ==============================================================================
+# Canonical Hospital Attendance Cycle Helpers (26th of prev month to 25th)
+# ==============================================================================
+
+def resolve_cycle_range(target_month=None, from_date_in=None, to_date_in=None, cycle='hospital'):
+    """
+    Resolves start_date and end_date for an attendance month cycle.
+    Organization standard cycle is 26th of previous month to 25th of target month.
+    Returns: (target_month, from_str, to_str, period_key)
+    """
+    from datetime import datetime, date
+
+    if from_date_in and to_date_in:
+        from_str = str(from_date_in).strip()
+        to_str = str(to_date_in).strip()
+        t_month = target_month or to_str[:7]
+        return t_month, from_str, to_str, f"{from_str}_{to_str}"
+
+    if not target_month:
+        # If no month specified, determine active cycle from current IST date
+        return get_current_active_cycle()
+
+    try:
+        parts = str(target_month).strip().split('-')
+        y, m = int(parts[0]), int(parts[1])
+    except Exception:
+        now = datetime.now()
+        y, m = now.year, now.month
+        target_month = f"{y:04d}-{m:02d}"
+
+    if m == 1:
+        prev_y, prev_m = y - 1, 12
+    else:
+        prev_y, prev_m = y, m - 1
+
+    from_str = f"{prev_y:04d}-{prev_m:02d}-26"
+    to_str = f"{y:04d}-{m:02d}-25"
+    period_key = f"{from_str}_{to_str}"
+
+    return target_month, from_str, to_str, period_key
+
+
+def get_cycle_for_date(date_val):
+    """
+    Given a date (str 'YYYY-MM-DD' or date/datetime), determines which attendance cycle it belongs to.
+    Rule: Days 26 to month-end belong to the NEXT month's cycle.
+          Days 1 to 25 belong to the CURRENT month's cycle.
+    Returns: (cycle_target_month, cycle_from_str, cycle_to_str)
+    """
+    from datetime import datetime, date
+
+    if isinstance(date_val, (datetime, date)):
+        y = date_val.year
+        m = date_val.month
+        d = date_val.day
+    else:
+        parts = str(date_val).strip()[:10].split('-')
+        y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+
+    if d >= 26:
+        # Belongs to next month cycle
+        if m == 12:
+            target_y, target_m = y + 1, 1
+        else:
+            target_y, target_m = y, m + 1
+    else:
+        target_y, target_m = y, m
+
+    target_month_str = f"{target_y:04d}-{target_m:02d}"
+    _, from_str, to_str, _ = resolve_cycle_range(target_month_str)
+    return target_month_str, from_str, to_str
+
+
+def get_current_active_cycle():
+    """
+    Returns the currently active attendance cycle based on today's date in IST.
+    If today is >= 26th: the active working cycle target month is NEXT month.
+    If today is <= 25th: the active working cycle target month is CURRENT month.
+    Returns: (target_month, from_str, to_str, period_key)
+    """
+    from datetime import datetime
+    import pytz
+
+    ist_tz = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist_tz).date()
+    target_month, from_str, to_str = get_cycle_for_date(now)
+    return target_month, from_str, to_str, f"{from_str}_{to_str}"
+
+
+def get_cycle_dates_list(target_month=None, from_date_in=None, to_date_in=None):
+    """
+    Returns a list of datetime.date objects for every day in the cycle range.
+    """
+    from datetime import datetime, timedelta
+
+    _, from_str, to_str, _ = resolve_cycle_range(target_month, from_date_in, to_date_in)
+    start_d = datetime.strptime(from_str, "%Y-%m-%d").date()
+    end_d = datetime.strptime(to_str, "%Y-%m-%d").date()
+
+    dates = []
+    curr = start_d
+    while curr <= end_d:
+        dates.append(curr)
+        curr += timedelta(days=1)
+    return dates
+
 
 
 

@@ -39,13 +39,10 @@ def my_attendance_report(request):
         now_ist = timezone.now().astimezone(ist_tz)
         today = now_ist.date()
 
-        if not month_str:
-            month_str = today.strftime("%Y-%m")
-            
-        year, month = map(int, month_str.split('-'))
-        _, last_day = calendar.monthrange(year, month)
-        start_date = datetime.date(year, month, 1)
-        end_date = datetime.date(year, month, last_day)
+        from employees.views.common.utils import resolve_cycle_range
+        month_str, from_str, to_str, _ = resolve_cycle_range(month_str)
+        start_date = datetime.datetime.strptime(from_str, "%Y-%m-%d").date()
+        end_date = datetime.datetime.strptime(to_str, "%Y-%m-%d").date()
         
         # Get employee info
         emp_str = str(employee_id).strip()
@@ -208,6 +205,9 @@ def my_attendance_report(request):
             "employee_id": emp_str,
             "employee_name": emp_name,
             "month": month_str,
+            "cycle_from": from_str,
+            "cycle_to": to_str,
+            "period": f"{from_str} to {to_str}",
             "report": report_data
         }, status=200)
 

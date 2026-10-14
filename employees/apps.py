@@ -21,6 +21,12 @@ class EmployeesConfig(AppConfig):
         except Exception as e:
             print(f"⚠️ Face model warm-up skipped: {e}")
 
+        try:
+            from employees.services.attendance_listener import start_attendance_listener
+            start_attendance_listener()
+        except Exception as e:
+            print(f"⚠️ Attendance listener start skipped: {e}")
+
     def _warm_up_face_models(self):
         """
         Loads the DeepFace anti-spoofing/detector models into memory once at process

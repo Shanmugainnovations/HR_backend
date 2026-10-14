@@ -21,11 +21,10 @@ def my_attendance_report(request):
         if not month_str:
             return Response({"error": "Month parameter is required (YYYY-MM)"}, status=400)
             
-        year, month = map(int, month_str.split('-'))
-        import calendar
-        _, last_day = calendar.monthrange(year, month)
-        start_date = datetime.date(year, month, 1)
-        end_date = datetime.date(year, month, last_day)
+        from employees.views.common.utils import resolve_cycle_range
+        month_str, from_str, to_str, _ = resolve_cycle_range(month_str)
+        start_date = datetime.datetime.strptime(from_str, "%Y-%m-%d").date()
+        end_date = datetime.datetime.strptime(to_str, "%Y-%m-%d").date()
         
         # Get employee info
         try:

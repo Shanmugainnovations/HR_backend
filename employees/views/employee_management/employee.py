@@ -52,6 +52,16 @@ def get_all_employees_with_images(request):
 
         # Department Filtering
         department = request.query_params.get('department')
+        from employees.views.common.utils import get_request_user_hod_departments
+        is_restricted_supervisor, assigned_departments = get_request_user_hod_departments(request)
+        if is_restricted_supervisor:
+            if not department or department == 'All':
+                department = ",".join(assigned_departments) if assigned_departments else "NONE"
+            else:
+                requested_terms = [d.strip() for d in str(department).split(',') if d.strip()]
+                valid_terms = [t for t in requested_terms if t in assigned_departments]
+                department = ",".join(valid_terms) if valid_terms else ",".join(assigned_departments)
+
         employees = Employee.objects.filter(current_face_encoding__isnull=False).order_by("employee_id")
 
         if department and department != 'All':
@@ -191,6 +201,7 @@ def get_employee_by_md5(request, image_md5):
 
 
 @api_view(['POST'])
+@permission_classes([HasRoleAndDataPermission])
 def enable_facial_recognition(request, employee_id):
     emp = get_object_or_404(Employee, employee_id=employee_id)
     sync_employee_status(employee_id, True)
@@ -198,6 +209,7 @@ def enable_facial_recognition(request, employee_id):
 
 
 @api_view(['POST'])
+@permission_classes([HasRoleAndDataPermission])
 def disable_facial_recognition(request, employee_id):
     emp = get_object_or_404(Employee, employee_id=employee_id)
 
@@ -302,7 +314,7 @@ def get_employee_detail(request, employee_id):
 import re
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_all_employee_from_global(request):
     """
     Get ALL employee profiles with department & designation names resolved,

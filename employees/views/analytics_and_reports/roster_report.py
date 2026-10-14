@@ -11,7 +11,7 @@ from pymongo import MongoClient
 from employees.models import EmployeeShiftSchedule, Employee, Shift, Department
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def export_roster_csv(request):
 
     from_date_str = request.query_params.get('from_date')
@@ -19,25 +19,15 @@ def export_roster_csv(request):
     month_str = request.query_params.get('month')
     department_filter = request.query_params.get('department') # Optional (IDs)
 
-    if from_date_str and to_date_str:
-        try:
-            start_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
-            end_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
-            year, month = start_date.year, start_date.month
-            month_label = f"{from_date_str}_to_{to_date_str}"
-        except ValueError:
-            return HttpResponse("Invalid date format. Use YYYY-MM-DD", status=400)
-    elif month_str:
-        try:
-            year, month = map(int, month_str.split('-'))
-            _, last_day = calendar.monthrange(year, month)
-            start_date = date(year, month, 1)
-            end_date = date(year, month, last_day)
-            month_label = month_str
-        except ValueError:
-            return HttpResponse("Invalid month format. Use YYYY-MM", status=400)
-    else:
-        return HttpResponse("Either from_date/to_date or month parameter is required", status=400)
+    from employees.views.common.utils import resolve_cycle_range
+    target_m, from_str, to_str, _ = resolve_cycle_range(month_str, from_date_str, to_date_str)
+    try:
+        start_date = datetime.strptime(from_str, '%Y-%m-%d').date()
+        end_date = datetime.strptime(to_str, '%Y-%m-%d').date()
+        year, month = end_date.year, end_date.month
+        month_label = f"{from_str}_to_{to_str}" if from_date_str else str(target_m)
+    except (ValueError, TypeError):
+        return HttpResponse("Invalid date or month format", status=400)
 
     from employees.views.common.utils import resolve_department_filter
     dept_ctx = resolve_department_filter(department_filter)
@@ -150,32 +140,22 @@ def export_roster_csv(request):
     return response
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def export_roster_xlsx(request):
     from_date_str = request.query_params.get('from_date')
     to_date_str = request.query_params.get('to_date')
     month_str = request.query_params.get('month')
     department_filter = request.query_params.get('department')
 
-    if from_date_str and to_date_str:
-        try:
-            start_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
-            end_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
-            year, month = start_date.year, start_date.month
-            month_label = f"{from_date_str}_to_{to_date_str}"
-        except ValueError:
-            return HttpResponse("Invalid date format. Use YYYY-MM-DD", status=400)
-    elif month_str:
-        try:
-            year, month = map(int, month_str.split('-'))
-            _, last_day = calendar.monthrange(year, month)
-            start_date = date(year, month, 1)
-            end_date = date(year, month, last_day)
-            month_label = month_str
-        except ValueError:
-            return HttpResponse("Invalid month format. Use YYYY-MM", status=400)
-    else:
-        return HttpResponse("Either from_date/to_date or month parameter is required", status=400)
+    from employees.views.common.utils import resolve_cycle_range
+    target_m, from_str, to_str, _ = resolve_cycle_range(month_str, from_date_str, to_date_str)
+    try:
+        start_date = datetime.strptime(from_str, '%Y-%m-%d').date()
+        end_date = datetime.strptime(to_str, '%Y-%m-%d').date()
+        year, month = end_date.year, end_date.month
+        month_label = f"{from_str}_to_{to_str}" if from_date_str else str(target_m)
+    except (ValueError, TypeError):
+        return HttpResponse("Invalid date or month format", status=400)
 
     from employees.views.common.utils import resolve_department_filter
     dept_ctx = resolve_department_filter(department_filter)
@@ -322,22 +302,13 @@ def import_roster_xlsx(request):
     if not file:
         return JsonResponse({"error": "File is required"}, status=400)
 
-    if from_date_str and to_date_str:
-        try:
-            start_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
-            end_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
-        except ValueError:
-            return JsonResponse({"error": "Invalid date format"}, status=400)
-    elif month_str:
-        try:
-            year, month = map(int, month_str.split('-'))
-            _, last_day = calendar.monthrange(year, month)
-            start_date = date(year, month, 1)
-            end_date = date(year, month, last_day)
-        except ValueError:
-            return JsonResponse({"error": "Invalid month format"}, status=400)
-    else:
-        return JsonResponse({"error": "Date range or month is required"}, status=400)
+    from employees.views.common.utils import resolve_cycle_range
+    target_m, from_str, to_str, _ = resolve_cycle_range(month_str, from_date_str, to_date_str)
+    try:
+        start_date = datetime.strptime(from_str, '%Y-%m-%d').date()
+        end_date = datetime.strptime(to_str, '%Y-%m-%d').date()
+    except (ValueError, TypeError):
+        return JsonResponse({"error": "Invalid date or month format"}, status=400)
 
     try:
         df = pd.read_excel(file)
@@ -385,8 +356,8 @@ def import_roster_xlsx(request):
                     if match:
                         day = int(match.group(1))
                         try:
-                            # Use year/month from start_date
-                            target_date = date(start_date.year, start_date.month, day)
+                            # 26th-25th cycle: days >= 26 belong to start_date month, days <= 25 belong to end_date month
+                            target_date = date(start_date.year, start_date.month, day) if day >= 26 else date(end_date.year, end_date.month, day)
                         except: pass
 
                 if target_date:
@@ -427,22 +398,13 @@ def preview_roster_xlsx(request):
     if not file:
         return JsonResponse({"error": "File is required"}, status=400)
 
-    if from_date_str and to_date_str:
-        try:
-            start_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
-            end_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
-        except ValueError:
-            return JsonResponse({"error": "Invalid date format"}, status=400)
-    elif month_str:
-        try:
-            year, month = map(int, month_str.split('-'))
-            _, last_day = calendar.monthrange(year, month)
-            start_date = date(year, month, 1)
-            end_date = date(year, month, last_day)
-        except ValueError:
-            return JsonResponse({"error": "Invalid month format"}, status=400)
-    else:
-        return JsonResponse({"error": "Date range or month is required"}, status=400)
+    from employees.views.common.utils import resolve_cycle_range
+    target_m, from_str, to_str, _ = resolve_cycle_range(month_str, from_date_str, to_date_str)
+    try:
+        start_date = datetime.strptime(from_str, '%Y-%m-%d').date()
+        end_date = datetime.strptime(to_str, '%Y-%m-%d').date()
+    except (ValueError, TypeError):
+        return JsonResponse({"error": "Invalid date or month format"}, status=400)
 
     try:
         df = pd.read_excel(file)
@@ -497,7 +459,7 @@ def preview_roster_xlsx(request):
                     if match:
                         day = int(match.group(1))
                         try:
-                            target_date = date(start_date.year, start_date.month, day)
+                            target_date = date(start_date.year, start_date.month, day) if day >= 26 else date(end_date.year, end_date.month, day)
                         except: pass
 
                 if target_date:

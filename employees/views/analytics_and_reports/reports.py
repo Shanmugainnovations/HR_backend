@@ -31,7 +31,7 @@ def to_ist(dt):
     return dt.astimezone(IST)
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def roster_attendance_report(request):
 
     """
@@ -44,6 +44,17 @@ def roster_attendance_report(request):
     
     if not month_str and not (from_date_str and to_date_str):
         return Response({"error": "Month parameter (YYYY-MM) or From-To dates are required"}, status=400)
+
+    # Department scoping for HOD / AVP / Incharge
+    from employees.views.common.utils import get_request_user_hod_departments
+    is_restricted_supervisor, assigned_departments = get_request_user_hod_departments(request)
+    if is_restricted_supervisor:
+        if not department_filter or department_filter == 'All':
+            department_filter = ",".join(assigned_departments) if assigned_departments else "NONE"
+        else:
+            requested_terms = [d.strip() for d in str(department_filter).split(',') if d.strip()]
+            valid_terms = [t for t in requested_terms if t in assigned_departments]
+            department_filter = ",".join(valid_terms) if valid_terms else ",".join(assigned_departments)
 
     from employees.views.common.utils import resolve_department_filter
     dept_ctx = resolve_department_filter(department_filter)
@@ -122,23 +133,14 @@ def roster_attendance_report(request):
     if not employees_data:
         return Response([], status=200)
 
-    # 2. Date Range
-    if from_date_str and to_date_str:
-        try:
-            start_date = datetime.strptime(from_date_str, "%Y-%m-%d").date()
-            end_date = datetime.strptime(to_date_str, "%Y-%m-%d").date()
-        except ValueError:
-            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
-    elif month_str:
-        try:
-            year, month = map(int, month_str.split('-'))
-            _, last_day = calendar.monthrange(year, month)
-            start_date = date(year, month, 1)
-            end_date = date(year, month, last_day)
-        except (ValueError, TypeError):
-             return Response({"error": "Invalid month format. Use YYYY-MM"}, status=400)
-    else:
-        return Response({"error": "Date range or month is required"}, status=400)
+    # 2. Date Range (Hospital Standard 26th to 25th Cycle)
+    from employees.views.common.utils import resolve_cycle_range
+    target_m, from_str, to_str, _ = resolve_cycle_range(month_str, from_date_str, to_date_str)
+    try:
+        start_date = datetime.strptime(from_str, "%Y-%m-%d").date()
+        end_date = datetime.strptime(to_str, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return Response({"error": "Invalid date or month format. Use YYYY-MM or YYYY-MM-DD"}, status=400)
 
     # Pre-calculate dates for report
     report_dates = []
@@ -350,11 +352,15 @@ def roster_attendance_report(request):
                     if last_punch_time < shift_start:
                         punch_out_dt += timedelta(days=1)
                         
-                    is_late_login = (punch_in_dt - shift_start_dt).total_seconds() > 600
-                    is_early_checkout = (shift_end_dt - punch_out_dt).total_seconds() > 600
+                    late_seconds = (punch_in_dt - shift_start_dt).total_seconds()
+                    early_seconds = (shift_end_dt - punch_out_dt).total_seconds()
 
-                    late_mins = int((punch_in_dt - shift_start_dt).total_seconds() // 60)
-                    early_mins = int((shift_end_dt - punch_out_dt).total_seconds() // 60)
+                    late_mins = int(late_seconds // 60) if late_seconds > 0 else 0
+                    early_mins = int(early_seconds // 60) if early_seconds > 0 else 0
+
+                    # Strict exception rule: Only strictly greater than 10 mins (> 10 mins, not <= 10 or == 10)
+                    is_late_login = late_mins > 10
+                    is_early_checkout = early_mins > 10
 
                     dev_parts = []
                     if is_late_login and late_mins > 0:

@@ -1,5 +1,5 @@
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from employees.permissions import HasRoleAndDataPermission
 from rest_framework.response import Response
 from rest_framework import status
 import os
@@ -120,7 +120,7 @@ def send_expo_push_notification(employee_ids, title, body, data=None):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def register_push_token(request):
     """
     Registers or updates an employee's mobile push token.
@@ -157,7 +157,7 @@ def register_push_token(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 @token_required
 def get_employee_notifications(request):
     emp_id = getattr(request, 'authenticated_employee_id', None) or request.query_params.get('employee_id')
@@ -199,7 +199,7 @@ def get_employee_notifications(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 @token_required
 def mark_notifications_read(request):
     emp_id = getattr(request, 'authenticated_employee_id', None) or request.data.get('employee_id')
@@ -234,7 +234,7 @@ def mark_notifications_read(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 @token_required
 def clear_notifications(request):
     emp_id = getattr(request, 'authenticated_employee_id', None) or request.data.get('employee_id')
@@ -269,7 +269,7 @@ def clear_notifications(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 @token_required
 def get_unread_count(request):
     emp_id = getattr(request, 'authenticated_employee_id', None) or request.query_params.get('employee_id')
@@ -298,7 +298,7 @@ def get_unread_count(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 @token_required
 def send_admin_notification(request):
     """
@@ -397,7 +397,7 @@ def send_admin_notification(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 @token_required
 def get_active_popup_announcement(request):
     """
@@ -435,4 +435,28 @@ def get_active_popup_announcement(request):
     except Exception as e:
         print("Error fetching active popup announcement", e)
         return Response({"active_popup": None})
+
+
+@api_view(['GET'])
+@permission_classes([HasRoleAndDataPermission])
+def get_attendance_push_status(request):
+    """Returns listener status, counts, and recent delivery logs."""
+    from employees.services.attendance_listener import get_service_status
+    data = get_service_status()
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([HasRoleAndDataPermission])
+def toggle_attendance_push(request):
+    """Enables or disables automatic attendance push notifications."""
+    enabled = request.data.get('enabled')
+    if enabled is None:
+        return Response({"error": "enabled field (boolean) is required"}, status=status.HTTP_400_BAD_REQUEST)
+    from employees.services.attendance_listener import set_service_enabled
+    success = set_service_enabled(bool(enabled))
+    if success:
+        return Response({"success": True, "enabled": bool(enabled), "message": f"Attendance push notifications {'enabled' if enabled else 'disabled'}"})
+    return Response({"error": "Failed to update setting"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 

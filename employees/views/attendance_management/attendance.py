@@ -10,6 +10,7 @@ IST = pytz.timezone('Asia/Kolkata')
 from django.http import JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
+from employees.permissions import HasRoleAndDataPermission
 from rest_framework.response import Response
 
 from employees.models import Employee, EmployeeAttendance, SpoofingAttempt
@@ -339,7 +340,7 @@ def mark_attendance(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def attendance_report_with_employee_details(request):
     """
     Get attendance records filtered by date and merged with employee details.
@@ -351,9 +352,10 @@ def attendance_report_with_employee_details(request):
         to_date = request.GET.get('to_date')
 
         if not from_date or not to_date:
-            now = datetime.now()
-            from_date = datetime(now.year, now.month, 1)
-            to_date = datetime(now.year, now.month + 1, 1) if now.month < 12 else datetime(now.year + 1, 1, 1)
+            from employees.views.common.utils import get_current_active_cycle
+            _, from_str, to_str, _ = get_current_active_cycle()
+            from_date = datetime.strptime(from_str, "%Y-%m-%d")
+            to_date = datetime.strptime(to_str, "%Y-%m-%d") + timedelta(days=1)
         else:
             from_date = datetime.strptime(from_date, "%Y-%m-%d")
             to_date = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
@@ -683,7 +685,7 @@ def attendance_report_with_employee_details(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])  # Or admin permission
+@permission_classes([HasRoleAndDataPermission])
 def get_spoofing_attempts(request):
     """
     Get all recorded spoofing attempts.
@@ -745,7 +747,7 @@ def get_spoofing_attempts(request):
     return Response(data, status=200)
 
 @api_view(['POST'])
-@permission_classes([AllowAny]) # Should be protected in production
+@permission_classes([HasRoleAndDataPermission])
 def delete_spoofing_attempts(request):
     """
     Delete spoofing attempts by ID.

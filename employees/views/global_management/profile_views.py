@@ -664,7 +664,7 @@ def update_user_status(request, employee_id):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def resend_employee_email(request, employee_id):
     """
     Resend welcome / credentials email to employee.

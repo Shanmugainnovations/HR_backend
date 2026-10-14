@@ -19,6 +19,9 @@ class HasRoleAndDataPermission(permissions.BasePermission):
             token = (
                 request.headers.get("Authorization")
                 or request.META.get("HTTP_AUTHORIZATION")
+                or request.GET.get("token")
+                or request.GET.get("auth_token")
+                or request.GET.get("jwt")
                 or ""
             )
             if token.startswith("Bearer "):
@@ -27,7 +30,7 @@ class HasRoleAndDataPermission(permissions.BasePermission):
                 token = token[7:].strip()
 
             if not token:
-                print("HasRoleAndDataPermission: Access not allowed. Reason: Missing Authorization token")
+                print(f"HasRoleAndDataPermission: Access not allowed. Reason: Missing Authorization token for {request.get_full_path()}")
                 return False
 
             branch_code = (
@@ -40,7 +43,14 @@ class HasRoleAndDataPermission(permissions.BasePermission):
             http_method = request.method
 
             vjson = checkAccess(token, branch_code, page_path, http_method)
-            _set_auth_data(request, vjson, branch_code)
+            try:
+                if not hasattr(request, 'data') or request.data is None:
+                    request.data = {}
+                _set_auth_data(request, vjson, branch_code)
+            except Exception:
+                pass
+            request.auth_data = vjson
+            request.authenticated_employee_id = vjson.get('aud') or vjson.get('employee_id')
             print(f"HasRoleAndDataPermission: Access allowed for {page_path}")
             return True
         except ValueError as e:

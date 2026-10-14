@@ -49,7 +49,7 @@ def get_data_entitlements(request):
 
 
 @api_view(['POST', 'GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_data_departments(request):
     db = _get_db()
     collection = db['backend_diagnostics_Departments']
@@ -64,7 +64,7 @@ def get_data_departments(request):
 
 
 @api_view(['POST', 'GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_data_designation(request):
     db = _get_db()
     collection = db['backend_diagnostics_Designation']
@@ -79,7 +79,7 @@ def get_data_designation(request):
 
 
 @api_view(['POST', 'GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def getprimaryandadditionalrole(request):
     db = _get_db()
     collection = db['backend_diagnostics_RoleMapping']
@@ -89,7 +89,7 @@ def getprimaryandadditionalrole(request):
 
 
 @api_view(['GET', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_next_department_code(request):
     try:
         next_code = _generate_next_code(_get_dept_col(), "DEPT", "department_code")
@@ -99,7 +99,7 @@ def get_next_department_code(request):
 
 
 @api_view(['GET', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_next_designation_code(request):
     try:
         next_code = _generate_next_code(_get_desig_col(), "DESG", "Designation_code")
@@ -109,7 +109,7 @@ def get_next_designation_code(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def addnew_department(request):
     try:
         dept_name = request.data.get("department_name")
@@ -164,7 +164,7 @@ def addnew_department(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def addnew_designation(request):
     try:
         desig_name = request.data.get("designation")
@@ -218,7 +218,7 @@ def addnew_designation(request):
 
 
 @api_view(['PUT', 'PATCH', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def update_department(request, dept_code):
     try:
         col = _get_dept_col()
@@ -257,7 +257,7 @@ def update_department(request, dept_code):
 
 
 @api_view(['PUT', 'PATCH', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def update_designation(request, desig_code):
     try:
         col = _get_desig_col()

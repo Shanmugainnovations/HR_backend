@@ -14,7 +14,9 @@ from .views.mobile_app.notifications import (
     get_unread_count,
     send_admin_notification,
     register_push_token,
-    get_active_popup_announcement
+    get_active_popup_announcement,
+    get_attendance_push_status,
+    toggle_attendance_push
 )
 
 
@@ -104,6 +106,8 @@ urlpatterns = [
     path('admin/send-notification/', send_admin_notification, name='admin-send-notification'),
     path('register-push-token/', register_push_token, name='register-push-token'),
     path('employee/notifications/active-popup/', get_active_popup_announcement, name='active-popup-announcement'),
+    path('attendance-push/status/', get_attendance_push_status, name='attendance-push-status'),
+    path('attendance-push/toggle/', toggle_attendance_push, name='attendance-push-toggle'),
     path('set-employee-password/', views.set_employee_password, name='set-employee-password'),
     path('set_employee_password/', views.set_employee_password, name='set_employee_password'),
     path('data-entitlements/', views.get_data_entitlements, name='data-entitlements'),
@@ -149,6 +153,12 @@ urlpatterns = [
     path('mobile-employee-check/', views.mobile_employee_check, name='mobile-employee-check'),
     path('mobile-create-login/', views.mobile_create_login, name='mobile-create-login'),
 
+    # Attendance 2-Tier Approvals (HOD -> Admin -> Gated Payroll)
+    path('attendance/approval-summary/', views.get_attendance_approval_summary, name='attendance-approval-summary'),
+    path('attendance/department-staff-summary/', views.get_department_staff_attendance_summary, name='attendance-department-staff-summary'),
+    path('attendance/department-action/', views.department_attendance_action, name='attendance-department-action'),
+    path('attendance/regularize-employee/', views.regularize_employee_attendance, name='attendance-regularize-employee'),
+
     # Payroll & Salary Management
     path('payroll/monthly/', views.monthly_payroll_view, name='monthly-payroll'),
     path('payroll/update-entry/', views.update_payroll_entry, name='update-payroll-entry'),
@@ -158,6 +168,8 @@ urlpatterns = [
     path('payroll/export-bank-sheet/', views.export_bank_transfer_sheet, name='export-bank-sheet'),
     path('payroll/export-pf-ecr/', views.export_pf_ecr, name='export-pf-ecr'),
     path('payroll/export-esi-return/', views.export_esi_return, name='export-esi-return'),
+    path('payroll/export-csv/', views.export_payroll_csv, name='export-payroll-csv'),
+    path('payroll/purge-drafts/', views.purge_draft_payrolls, name='purge-draft-payrolls'),
     path('payroll/payslip-pdf/<str:employee_id>/', views.download_payslip_html, name='download-payslip-html'),
     path('payroll/employee-payslips/<str:employee_id>/', views.employee_payslip_history, name='employee-payslip-history'),
     path('payroll/late-hours-deductions/', views.get_late_hours_deductions_report, name='payroll-late-hours-deductions'),

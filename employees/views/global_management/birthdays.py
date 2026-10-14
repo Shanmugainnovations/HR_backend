@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timezone, timedelta
-from rest_framework.permissions import AllowAny
+from employees.permissions import HasRoleAndDataPermission
 from django.http import JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 from employees.models import Profile
@@ -83,7 +83,7 @@ def trigger_birthday_push_notifications(today_birthdays, today_str):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_todays_birthdays(request):
     """Fetch all employees celebrating their birthday today and upcoming."""
     try:
@@ -255,7 +255,7 @@ def _parse_dob(dob_raw):
 
 
 @api_view(['POST', 'GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def trigger_birthday_notifications_api(request):
     """
     Dedicated endpoint to manually or cron-trigger birthday push notifications.
@@ -299,7 +299,7 @@ def trigger_birthday_notifications_api(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def send_birthday_wish_api(request):
     """
     Sends a birthday wish notification from one colleague to another.
@@ -581,7 +581,7 @@ def _generate_csv_response(data):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_monthly_birthdays(request):
     """
     Fetch employee birthdays month-wise (Jan - Dec, 'all', 'today', or 'upcoming').

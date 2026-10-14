@@ -11,7 +11,7 @@ from gridfs import GridFS
 from django.http import HttpResponse, Http404
 from django.contrib.auth.hashers import make_password, check_password, identify_hasher
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from employees.permissions import HasRoleAndDataPermission
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -79,7 +79,7 @@ def _load_reference_maps(db):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_full_employee_profile(request):
     """
     Mobile & Web API: Fetches complete employee profile details matching employee_id
@@ -234,7 +234,7 @@ def get_full_employee_profile(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def serve_employee_profile_photo(request, employee_id):
     """
     Direct image serving view for employee:
@@ -314,7 +314,7 @@ def serve_employee_profile_photo(request, employee_id):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def change_employee_password(request):
     """
     Password Change API for Mobile App and Web:
