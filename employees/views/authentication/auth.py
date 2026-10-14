@@ -7,6 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
+from employees.permissions import HasRoleAndDataPermission
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -81,6 +82,7 @@ def get_db():
 
 
 @api_view(['GET', 'POST', 'PUT', 'DELETE'])
+@permission_classes([HasRoleAndDataPermission])
 def registration(request):
 
     try:
@@ -548,7 +550,7 @@ def my_ip(request):
 
 
 @api_view(['GET', 'POST', 'PUT', 'DELETE'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def allowed_devices(request, device_id=None):
     """Admin-only CRUD for the AllowedDevice whitelist."""
     # Requester identity handling for audit if needed, but we allow anyone with valid credentials to manage? 
@@ -650,7 +652,7 @@ def register_device_api(request):
         return Response({"error": str(e)}, status=500)
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_global_departments(request):
     """Retrieve all unique departments from Global MongoDB."""
     try:
@@ -715,7 +717,7 @@ def set_employee_password(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_user_profile(request, employee_id):
     """Fetch assigned departments, role, and profile info for a user."""
     try:
@@ -761,13 +763,14 @@ def get_user_profile(request, employee_id):
         home_names = resolve_department_names(reg_user.department if reg_user else dept)
 
         final_role = reg_user.role if reg_user and reg_user.role else role
+        is_dept_supervisor = any(k in str(final_role).upper() for k in ['HOD', 'AVP', 'INC', 'INCHARGE'])
 
         return Response({
             "employee_id": emp_str,
             "name": (reg_user.name if reg_user and reg_user.name else name),
             "role": final_role,
-            "department": assigned_depts if 'HOD' in str(final_role) else (reg_user.department if reg_user else dept),
-            "department_name": assigned_names if 'HOD' in str(final_role) else home_names,
+            "department": assigned_depts if is_dept_supervisor else (reg_user.department if reg_user else dept),
+            "department_name": assigned_names if is_dept_supervisor else home_names,
             "assigned_departments": assigned_depts,
             "assigned_department_names": assigned_names,
         }, status=200)

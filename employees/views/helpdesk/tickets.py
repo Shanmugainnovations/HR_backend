@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone, timedelta
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from employees.permissions import HasRoleAndDataPermission
 from rest_framework.response import Response
 from rest_framework import status
 from pymongo import MongoClient, DESCENDING
@@ -82,7 +82,7 @@ def generate_ticket_id(col):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_helpdesk_categories(request):
     """Return list of supported helpdesk categories with SLAs"""
     return Response({
@@ -91,7 +91,7 @@ def get_helpdesk_categories(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_helpdesk_tickets(request):
     """
     Fetch tickets.
@@ -193,7 +193,7 @@ def get_helpdesk_tickets(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def create_helpdesk_ticket(request):
     """Create a new helpdesk ticket from Employee Mobile App or Web"""
     try:
@@ -285,7 +285,7 @@ def create_helpdesk_ticket(request):
 
 
 @api_view(['PUT', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def update_helpdesk_ticket(request, ticket_id):
     """
     Update ticket status and response from HR Admin.

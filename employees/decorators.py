@@ -10,6 +10,10 @@ def token_required(view_func):
     """
     @wraps(view_func)
     def _wrapped_view(request, *args, **kwargs):
+        # 0. Check if already authenticated by DRF permission classes
+        if getattr(request, 'authenticated_employee_id', None):
+            return view_func(request, *args, **kwargs)
+
         # 1. Extract token from Authorization header
         auth_header = request.headers.get('Authorization') or request.META.get('HTTP_AUTHORIZATION')
         token = None

@@ -10,7 +10,7 @@ from bson import ObjectId
 import pytz
 from django.http import HttpResponse, JsonResponse
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from employees.permissions import HasRoleAndDataPermission
 from rest_framework.response import Response
 from rest_framework import status
 from pymongo import MongoClient
@@ -263,6 +263,8 @@ def calculate_attendance_metrics_from_roster(target_month=None, employee_ids=Non
         off_count = 0
         leave_count = 0
         sp_count = 0
+        sp_dates = []
+        daily_records = []
         late_minutes_list = []
         late_events_list = []
 
@@ -281,6 +283,8 @@ def calculate_attendance_metrics_from_roster(target_month=None, employee_ids=Non
 
             in_punches = [p for p in punches if p.get('type') == 'IN']
             out_punches = [p for p in punches if p.get('type') == 'OUT']
+            day_shortfall_mins = 0
+            day_shortfall_str = '-'
 
             # Calculate Roster Time Shortfall (Expected Shift Duration vs Actual Worked Hours)
             if in_punches and out_punches and shift_obj and not is_leave_shift:
@@ -307,6 +311,8 @@ def calculate_attendance_metrics_from_roster(target_month=None, employee_ids=Non
                     if effective_shortfall > grace_period:
                         net_shortfall = effective_shortfall - grace_period
                         if net_shortfall > 0:
+                            day_shortfall_mins = net_shortfall
+                            day_shortfall_str = f"{net_shortfall // 60}h {net_shortfall % 60:02d}m" if net_shortfall >= 60 else f"{net_shortfall}m"
                             late_minutes_list.append(net_shortfall)
                             late_events_list.append({
                                 'date': date_str,
@@ -327,12 +333,13 @@ def calculate_attendance_metrics_from_roster(target_month=None, employee_ids=Non
                                 'effective_shortfall_mins': effective_shortfall,
                                 'grace_mins': grace_period,
                                 'net_shortfall_mins': net_shortfall,
-                                'shortfall_str': f"{net_shortfall // 60}h {net_shortfall % 60:02d}m" if net_shortfall >= 60 else f"{net_shortfall}m",
+                                'shortfall_str': day_shortfall_str,
                                 'is_heavy': net_shortfall >= 60,
                                 'penalty_type': 'Heavy Delay (1.0 Day LOP)' if net_shortfall >= 120 else ('Heavy Delay (0.5 Day LOP)' if net_shortfall >= 60 else 'Occasion Shortfall')
                             })
                     elif perm_doc and shortfall > 0:
                         # Shortfall was fully waived by permission!
+                        day_shortfall_str = 'Waived by 1h Permission'
                         late_events_list.append({
                             'date': date_str,
                             'day_name': current_date.strftime('%a'),
@@ -352,47 +359,88 @@ def calculate_attendance_metrics_from_roster(target_month=None, employee_ids=Non
                             'effective_shortfall_mins': 0,
                             'grace_mins': grace_period,
                             'net_shortfall_mins': 0,
-                            'shortfall_str': 'Waived by 1h Permission',
+                            'shortfall_str': day_shortfall_str,
                             'is_heavy': False,
                             'penalty_type': 'Waived by 1h Permission'
                         })
+                    elif shortfall > 0 and effective_shortfall <= grace_period:
+                        day_shortfall_str = f"Within Grace ({shortfall}m)"
+
+            first_in = min([p['time'] for p in in_punches]) if in_punches else None
+            last_out = max([p['time'] for p in out_punches]) if out_punches else None
+            is_sp_day = False
 
             if current_date > date.today():
                 # Future date in the current month: not an absent day!
                 off_count += 1
                 present_count += 1
+                day_status = 'Future'
+                status_code = '-'
             elif in_punches and out_punches:
                 # Both IN and OUT punches -> Full Present
                 present_count += 1
+                day_status = 'Present'
+                status_code = 'P'
             elif in_punches or out_punches:
                 # Single punch
                 sp_count += 1
+                is_sp_day = True
+                sp_dates.append(current_date.strftime('%Y-%m-%d'))
                 if treat_sp_as_present:
                     present_count += 1
                 else:
                     present_count += 0.5
                     lop_count += 0.5
+                day_status = 'Single Punch'
+                status_code = 'SP'
             elif is_approved_leave or is_leave_shift:
                 # Approved leave shift or formal leave -> Paid day (0 LOP)
                 leave_count += 1
                 present_count += 1
+                day_status = approved_leave_map.get((eid, current_date), shift_name or 'Leave')
+                status_code = 'L'
             elif not shift_obj or current_date.weekday() == 6:
                 # Week Off / Sunday / Unassigned -> Paid day (0 LOP)
                 off_count += 1
                 present_count += 1
+                day_status = 'Week Off'
+                status_code = 'WO'
             else:
                 # Past/today shift was assigned, but employee has no punches and no approved leave -> True Absent / LOP
                 lop_count += 1
+                day_status = 'Absent'
+                status_code = 'A'
+
+            daily_records.append({
+                'date': current_date.strftime('%Y-%m-%d'),
+                'day': current_date.strftime('%a'),
+                'shift_name': shift_name or ('Week Off' if current_date.weekday() == 6 else 'General'),
+                'shift_timing': f"{shift_obj.start_time.strftime('%H:%M')} - {shift_obj.end_time.strftime('%H:%M')}" if shift_obj else '-',
+                'check_in': first_in.strftime('%H:%M:%S') if first_in else '-',
+                'check_out': last_out.strftime('%H:%M:%S') if last_out else '-',
+                'status': day_status,
+                'status_code': status_code,
+                'is_single_punch': is_sp_day,
+                'is_absent': status_code == 'A',
+                'shortfall_minutes': day_shortfall_mins,
+                'shortfall_str': day_shortfall_str
+            })
 
         late_lop_info = calculate_late_hours_lop(late_minutes_list)
+        tot_sf_mins = sum(late_minutes_list)
+        sf_hours_str = f"{tot_sf_mins // 60}h {tot_sf_mins % 60:02d}m" if tot_sf_mins >= 60 else (f"{tot_sf_mins}m" if tot_sf_mins > 0 else "0m")
 
         metrics[eid] = {
             'total_month_days': total_days_in_month,
             'present_days': present_count,
             'lop_days': lop_count,
             'sp_days': sp_count,
+            'sp_dates': sp_dates,
             'off_days': off_count,
             'leave_days': leave_count,
+            'total_shortfall_mins': tot_sf_mins,
+            'shortfall_hours_str': sf_hours_str,
+            'daily_records': daily_records,
             'late_minutes_list': late_minutes_list,
             'late_events_list': late_events_list,
             'late_lop_days': late_lop_info['total_late_lop_days'],
@@ -403,7 +451,7 @@ def calculate_attendance_metrics_from_roster(target_month=None, employee_ids=Non
 
 
 @api_view(['GET', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def monthly_payroll_view(request):
     """
     GET: Retrieve payroll for a specific month or date range (?fromDate=YYYY-MM-DD&toDate=YYYY-MM-DD or ?month=YYYY-MM).
@@ -516,6 +564,22 @@ def monthly_payroll_view(request):
             departments_summary[d_name]['totalNet'] += float(r.get('netSalary', 0) or 0)
             if r.get('hasHodEdits') or (r.get('auditTrail') and len(r.get('auditTrail')) > 0):
                 departments_summary[d_name]['hasHodEdits'] = True
+
+        # Annotate attendance approval status from backend_diagnostics_attendance_approval
+        approval_col = db['backend_diagnostics_attendance_approval']
+        exist_appr_query = {'$or': [{'month': target_month}, {'periodKey': period_key}]}
+        attendance_approvals = {r.get('department'): r for r in approval_col.find(exist_appr_query) if r.get('department')}
+
+        for d_name, d_data in departments_summary.items():
+            att_rec = attendance_approvals.get(d_name)
+            if att_rec:
+                d_data['attendanceStatus'] = att_rec.get('status', 'Draft')
+                d_data['attendanceHodApprovedBy'] = att_rec.get('hodApprovedBy')
+                d_data['attendanceHodApprovedAt'] = att_rec.get('hodApprovedAt')
+                d_data['attendanceAdminApprovedBy'] = att_rec.get('adminApprovedBy')
+                d_data['attendanceAdminApprovedAt'] = att_rec.get('adminApprovedAt')
+            else:
+                d_data['attendanceStatus'] = 'Draft'
 
         if request.method == 'GET' and existing_records and not recalculate:
             from employees.views.common.utils import is_admin_user
@@ -667,6 +731,13 @@ def monthly_payroll_view(request):
             except:
                 return default
 
+        # Fetch any attendance regularizations for this period
+        reg_col = db['backend_diagnostics_attendance_regularization']
+        reg_records = list(reg_col.find({
+            '$or': [{'month': target_month}, {'periodKey': period_key}]
+        }))
+        reg_map = {str(r.get('employeeId')): r for r in reg_records if r.get('employeeId')}
+
         for idx, p in enumerate(all_profiles, 1):
             emp_id = str(p.get('employeeId', '')).strip()
             if not emp_id:
@@ -698,8 +769,20 @@ def monthly_payroll_view(request):
                 'late_lop_info': {}
             })
 
-            present_days = att_metric.get('present_days', 0)
-            absent_lop_days = att_metric.get('lop_days', 0.0)
+            reg_doc = reg_map.get(emp_id)
+            if reg_doc:
+                present_days = float(reg_doc.get('regularizedPresentDays', att_metric.get('present_days', 0)) or 0)
+                absent_lop_days = float(reg_doc.get('regularizedLopDays', att_metric.get('lop_days', 0.0)) or 0)
+                sp_days = int(reg_doc.get('regularizedSpDays', att_metric.get('sp_days', 0)) or 0)
+                is_reg = True
+                reg_reason = reg_doc.get('reason', '')
+            else:
+                present_days = att_metric.get('present_days', 0)
+                absent_lop_days = att_metric.get('lop_days', 0.0)
+                sp_days = att_metric.get('sp_days', 0)
+                is_reg = False
+                reg_reason = ''
+
             late_lop_days = att_metric.get('late_lop_days', 0.0)
             total_lop_days = round(absent_lop_days + late_lop_days, 2)
 
@@ -765,7 +848,9 @@ def monthly_payroll_view(request):
                 'lateLopDays': late_lop_days,
                 'lateLopInfo': att_metric.get('late_lop_info', {}),
                 'lateEventsList': att_metric.get('late_events_list', []),
-                'spDays': att_metric.get('sp_days', 0),
+                'spDays': sp_days,
+                'isRegularized': is_reg,
+                'regularizationReason': reg_reason,
                 
                 # Earnings
                 'basicSalary': basic,
@@ -842,6 +927,20 @@ def monthly_payroll_view(request):
             new_dept_summary[d_name]['totalGross'] += float(r.get('grossSalary', 0) or 0)
             new_dept_summary[d_name]['totalNet'] += float(r.get('netSalary', 0) or 0)
 
+        # Annotate attendance status
+        approval_col = db['backend_diagnostics_attendance_approval']
+        exist_appr_query = {'$or': [{'month': target_month}, {'periodKey': period_key}]}
+        attendance_approvals = {r.get('department'): r for r in approval_col.find(exist_appr_query) if r.get('department')}
+
+        for d_name, d_data in new_dept_summary.items():
+            att_rec = attendance_approvals.get(d_name)
+            if att_rec:
+                d_data['attendanceStatus'] = att_rec.get('status', 'Draft')
+                d_data['attendanceHodApprovedBy'] = att_rec.get('hodApprovedBy')
+                d_data['attendanceAdminApprovedBy'] = att_rec.get('adminApprovedBy')
+            else:
+                d_data['attendanceStatus'] = 'Draft'
+
         # Strictly scope records and summary to HOD assigned departments if requester is HOD
         if is_hod and hod_assigned_depts:
             hod_allowed_lower = {d.lower().strip() for d in hod_assigned_depts}
@@ -916,7 +1015,7 @@ def monthly_payroll_view(request):
 
 
 @api_view(['PUT', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def update_payroll_entry(request):
     """
     Update adjustments for an employee in the monthly payroll.
@@ -973,8 +1072,8 @@ def update_payroll_entry(request):
                 'departmentStatus': 'Draft'
             }
 
-        # IMMUTABILITY CHECK: Reject if already Approved / Locked by Admin
-        if existing.get('status') == 'Approved' or existing.get('departmentStatus') == 'Admin_Approved':
+        # IMMUTABILITY CHECK: Reject if final monthly payroll is already Approved / Locked by Admin
+        if existing.get('status') == 'Approved':
             return Response({
                 'error': 'This payroll is Approved & Locked by Admin. Further edits and adjustments are strictly disabled.'
             }, status=status.HTTP_403_FORBIDDEN)
@@ -984,10 +1083,12 @@ def update_payroll_entry(request):
         editor_name = str(data.get('editorName') or data.get('editor_name') or '').strip()
         edit_reason = str(data.get('editReason') or data.get('edit_reason') or data.get('reason') or '').strip()
 
-        # If HOD has already submitted approval for this department, prevent HOD from editing unless Admin returned it to Draft
-        if 'HOD' in editor_role.upper() and existing.get('departmentStatus') == 'HOD_Approved':
+        # Strict enforcement: HODs cannot edit payroll or attendance entries in Payroll!
+        from employees.views.common.utils import is_admin_user
+        req_is_admin = is_admin_user(request)
+        if 'HOD' in editor_role.upper() or not req_is_admin:
             return Response({
-                'error': 'You have already verified & approved this department. To make further adjustments, request Admin to return it for revision.'
+                'error': 'HOD payroll adjustments are disabled. Department attendance must be verified and approved in Attendance Approvals.'
             }, status=status.HTTP_403_FORBIDDEN)
             
         # Extract editable fields
@@ -1029,7 +1130,7 @@ def update_payroll_entry(request):
         fines = float(data.get('fines', existing.get('fines', 0)) or 0)
         fine_remarks = str(data.get('fineRemarks', existing.get('fineRemarks', '')) or '').strip()
         other_ded = float(data.get('otherDeductions', existing.get('otherDeductions', 0)) or 0)
-        other_ded_remarks = str(data.get('otherDeductionsRemarks', existing.get('otherDeductionsRemarks', '')) or '').strip()
+        other_ded_remarks = str(data.get('otherDeductionsRemarks') or data.get('remarks') or data.get('reason') or existing.get('otherDeductionsRemarks', '') or '').strip()
 
         # Enforcement: HOD CANNOT add or edit fines or otherDeductions
         if 'HOD' in editor_role.upper():
@@ -1203,7 +1304,7 @@ def update_payroll_entry(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def approve_monthly_payroll(request):
     """
     Approve & Lock monthly payroll globally or department-wise.
@@ -1393,7 +1494,7 @@ def populate_month_payroll_if_missing(month):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def department_payroll_action(request):
     """
     Multi-Tier Approval Action for Payroll:
@@ -1563,7 +1664,7 @@ def department_payroll_action(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def payroll_audit_trail_view(request):
     """
     Retrieve audit trail and HOD modifications for payroll.
@@ -1655,8 +1756,54 @@ def payroll_audit_trail_view(request):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@api_view(['POST'])
+@permission_classes([HasRoleAndDataPermission])
+def purge_draft_payrolls(request):
+    """
+    Purges unapproved/draft payroll records for a selected month,
+    allowing a clean restart strictly from HR-approved attendance records.
+    Approved/Locked records are preserved.
+    """
+    try:
+        from employees.views.common.utils import is_admin_user
+        if not is_admin_user(request):
+            return Response({'error': 'Permission denied: Purging draft payroll is restricted to Admin users only.'}, status=status.HTTP_403_FORBIDDEN)
+
+        db = get_mongo_db()
+        payroll_col = db['backend_diagnostics_payroll']
+        month = request.data.get('month') or request.GET.get('month')
+        if not month:
+            return Response({'error': 'Month parameter (YYYY-MM) is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Strictly only delete Draft status records for the target month
+        delete_query = {
+            'month': month,
+            '$or': [
+                {'status': 'Draft'},
+                {'status': {'$exists': False}},
+                {'status': None},
+                {'departmentStatus': 'Draft'},
+                {'departmentStatus': 'Pending_Attendance_Approval'},
+                {'departmentStatus': {'$exists': False}},
+                {'departmentStatus': None}
+            ]
+        }
+        res = payroll_col.delete_many(delete_query)
+
+        return Response({
+            'success': True,
+            'message': f"Purged {res.deleted_count} draft payroll record(s) for {month}. Ready for fresh sync from Attendance Approvals.",
+            'deletedCount': res.deleted_count,
+            'month': month
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Error in purge_draft_payrolls: {str(e)}")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def export_bank_transfer_sheet(request):
     """
     Generate CSV file for Bank Transfer (NEFT/RTGS Batch).
@@ -1707,7 +1854,7 @@ def export_bank_transfer_sheet(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def export_pf_ecr(request):
     """
     Generate Statutory EPFO ECR (Electronic Challan cum Return) CSV / Text file.
@@ -1790,7 +1937,7 @@ def export_pf_ecr(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def export_esi_return(request):
     """
     Generate Statutory ESIC Monthly Contribution Return CSV.
@@ -1868,7 +2015,121 @@ def export_esi_return(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
+def export_payroll_csv(request):
+    """
+    Generate Comprehensive Master Payroll CSV Report.
+    Includes Employee details, Duty Roster attendance, Regularization notes,
+    Gross earnings, Statutory deductions (PF, ESI, PT), Absent LOP, Late Shortfall LOP,
+    Other Deductions + Mandatory Remarks, TDS, Mess/EB, Fines, Net Salary, and Approval Statuses.
+    """
+    try:
+        from employees.views.common.utils import is_admin_user, get_inactive_employee_ids, resolve_department_filter
+        if not is_admin_user(request):
+            return Response({'error': 'Permission denied: Master Payroll CSV export is restricted to Admin users only.'}, status=status.HTTP_403_FORBIDDEN)
+
+        db = get_mongo_db()
+        payroll_col = db['backend_diagnostics_payroll']
+        month = request.GET.get('month') or datetime.now().strftime('%Y-%m')
+        from_date = request.GET.get('fromDate') or request.GET.get('from_date')
+        to_date = request.GET.get('toDate') or request.GET.get('to_date')
+        department = request.GET.get('department')
+        
+        query = {'month': month}
+        if from_date and to_date:
+            query = {'$or': [
+                {'fromDate': str(from_date), 'toDate': str(to_date)},
+                {'month': month},
+                {'periodKey': f"{from_date}_{to_date}"}
+            ]}
+
+        if department and department != 'All':
+            dept_ctx = resolve_department_filter(department)
+            if dept_ctx['is_filtered']:
+                query.update(dept_ctx['mongo_query'])
+
+        inactive_ids = get_inactive_employee_ids()
+        records = [r for r in payroll_col.find(query).sort([('department', 1), ('employeeName', 1)]) if str(r.get('employeeId', '')).strip() not in inactive_ids]
+
+        if not records:
+            records = [r for r in payroll_col.find({'month': month}).sort([('department', 1), ('employeeName', 1)]) if str(r.get('employeeId', '')).strip() not in inactive_ids]
+
+        if not records:
+            return Response({'error': f'No payroll records found for {month}'}, status=status.HTTP_404_NOT_FOUND)
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Master CSV Header
+        writer.writerow([
+            'S.No', 'Employee ID', 'Employee Name', 'Department', 'Designation',
+            'Bank Name', 'Account Number', 'IFSC Code', 'Payment Mode',
+            'Total Month Days', 'Present Days', 'Absent (LOP) Days', 'Late Shortfall (LOP) Days', 'Total LOP Days',
+            'Basic Salary (INR)', 'HRA (INR)', 'Allowances (INR)', 'CL Encashment (INR)', 'Incentives (INR)', 'Gross Salary (INR)',
+            'Absent LOP Deduction (INR)', 'Late Shortfall Deduction (INR)', 'PF (INR)', 'ESI (INR)', 'Professional Tax (INR)',
+            'TDS Deduction (INR)', 'Mess / EB (INR)', 'Caution Deposit (INR)', 'Uniform / ID (INR)', 'Vaccine Deduction (INR)',
+            'Fines (INR)', 'Fine Remarks', 'Other Deductions (INR)', 'Other Deductions Remarks',
+            'Total Deductions (INR)', 'Net Salary (INR)',
+            'Attendance Locked', 'Department Approval Status', 'Overall Status', 'Approved By', 'Approved At'
+        ])
+
+        for idx, r in enumerate(records, 1):
+            writer.writerow([
+                idx,
+                r.get('employeeId', ''),
+                r.get('employeeName', ''),
+                r.get('department', ''),
+                r.get('designation', ''),
+                r.get('bankName', 'N/A'),
+                r.get('accountNumber', 'N/A'),
+                r.get('ifscCode', 'N/A'),
+                r.get('paymentMode', 'Bank Transfer'),
+                r.get('totalMonthDays', 0),
+                r.get('presentDays', 0),
+                r.get('absentLopDays', r.get('lopDays', 0)),
+                r.get('lateLopDays', 0),
+                r.get('lopDays', 0),
+                f"{float(r.get('basicSalary', 0) or 0):.2f}",
+                f"{float(r.get('hra', 0) or 0):.2f}",
+                f"{float(r.get('allowances', 0) or 0):.2f}",
+                f"{float(r.get('clEncashment', 0) or 0):.2f}",
+                f"{float(r.get('incentives', 0) or 0):.2f}",
+                f"{float(r.get('grossSalary', 0) or 0):.2f}",
+                f"{float(r.get('lopDeduction', 0) or 0):.2f}",
+                f"{float(r.get('lateDeduction', 0) or 0):.2f}",
+                f"{float(r.get('pf', 0) or 0):.2f}",
+                f"{float(r.get('esi', 0) or 0):.2f}",
+                f"{float(r.get('professionalTax', 0) or 0):.2f}",
+                f"{float(r.get('tdsDeduction', 0) or 0):.2f}",
+                f"{float(r.get('messEb', 0) or 0):.2f}",
+                f"{float(r.get('cautionDeposit', 0) or 0):.2f}",
+                f"{float(r.get('uniformId', 0) or 0):.2f}",
+                f"{float(r.get('vaccineDeduction', 0) or 0):.2f}",
+                f"{float(r.get('fines', 0) or 0):.2f}",
+                r.get('fineRemarks', ''),
+                f"{float(r.get('otherDeductions', 0) or 0):.2f}",
+                r.get('otherDeductionsRemarks', ''),
+                f"{float(r.get('totalDeductions', 0) or 0):.2f}",
+                f"{float(r.get('netSalary', 0) or 0):.2f}",
+                'Yes' if r.get('attendanceLocked') else 'No',
+                r.get('departmentStatus', 'Draft'),
+                r.get('status', 'Draft'),
+                r.get('adminApprovedBy') or r.get('hodApprovedBy') or 'Pending',
+                r.get('adminApprovedAt') or r.get('hodApprovedAt') or '-'
+            ])
+
+        response = HttpResponse(output.getvalue(), content_type='text/csv; charset=utf-8')
+        dept_tag = f"_{department}" if department and department != 'All' else ""
+        response['Content-Disposition'] = f'attachment; filename="Shanmuga_Hospital_Master_Payroll_{month}{dept_tag}.csv"'
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in export_payroll_csv: {str(e)}")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([HasRoleAndDataPermission])
 def download_payslip_html(request, employee_id):
     """
     Returns printable hospital payslip HTML.
@@ -2032,7 +2293,7 @@ def download_payslip_html(request, employee_id):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def employee_payslip_history(request, employee_id):
     """
     Endpoint for Mobile App: Return all monthly payslips for an employee.
@@ -2070,7 +2331,7 @@ def employee_payslip_history(request, employee_id):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_late_hours_deductions_report(request):
     """
     Specialized report & deduction review endpoint for Late Hours (August 2026 New Formula).
@@ -2343,7 +2604,7 @@ def get_late_hours_deductions_report(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_employee_late_events_breakdown(request):
     """
     Returns the exact date-wise Roster Time Shortfall events for a specific employee and month.
@@ -2421,7 +2682,7 @@ def get_employee_late_events_breakdown(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def apply_employee_permission(request):
     """
     Applies a 1-hour Permission to an employee for a specific shortfall date.
@@ -2563,7 +2824,7 @@ def apply_employee_permission(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def revoke_employee_permission(request):
     """
     Revokes a previously granted 1-hour Permission and recalculates late hours LOP.
@@ -2646,7 +2907,7 @@ def revoke_employee_permission(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_employee_monthly_permissions(request):
     """
     Returns the permissions granted to an employee in a given month.
@@ -2691,7 +2952,7 @@ def get_employee_monthly_permissions(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def manual_deduction_action(request):
     """
     Allows Admin to manually add, adjust, or override a deduction for an employee.

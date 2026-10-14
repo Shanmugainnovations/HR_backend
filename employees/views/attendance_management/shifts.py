@@ -9,7 +9,7 @@ from employees.permissions import HasRoleAndDataPermission
 import os
 
 @api_view(['GET', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def shift_list_create(request):
 
     if request.method == 'GET':
@@ -70,7 +70,7 @@ def shift_list_create(request):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET', 'PUT', 'DELETE'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def shift_detail(request, pk):
     try:
         shift = Shift.objects.get(pk=pk)
@@ -95,7 +95,7 @@ def shift_detail(request, pk):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 @api_view(['GET', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def department_list_create(request):
     if request.method == 'GET':
         dept_ids = request.query_params.get('department')
@@ -166,7 +166,7 @@ def department_list_create(request):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET', 'PUT', 'DELETE'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def department_detail(request, pk):
     try:
         department = Department.objects.get(pk=pk)
@@ -190,7 +190,7 @@ def department_detail(request, pk):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_monthly_roster(request):
     from_date_str = request.query_params.get('from_date')
     to_date_str = request.query_params.get('to_date')
@@ -200,22 +200,13 @@ def get_monthly_roster(request):
     import calendar
     from datetime import date, datetime
 
-    if from_date_str and to_date_str:
-        try:
-            start_date = datetime.strptime(from_date_str, '%Y-%m-%d').date()
-            end_date = datetime.strptime(to_date_str, '%Y-%m-%d').date()
-        except ValueError:
-            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
-    elif month_str:
-        try:
-            year, month = map(int, month_str.split('-'))
-            _, last_day = calendar.monthrange(year, month)
-            start_date = date(year, month, 1)
-            end_date = date(year, month, last_day)
-        except ValueError:
-            return Response({"error": "Invalid month format. Use YYYY-MM"}, status=status.HTTP_400_BAD_REQUEST)
-    else:
-        return Response({"error": "Either from_date/to_date or month parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+    from employees.views.common.utils import resolve_cycle_range
+    target_m, from_str, to_str, _ = resolve_cycle_range(month_str, from_date_str, to_date_str)
+    try:
+        start_date = datetime.strptime(from_str, '%Y-%m-%d').date()
+        end_date = datetime.strptime(to_str, '%Y-%m-%d').date()
+    except (ValueError, TypeError):
+        return Response({"error": "Invalid date or month format. Use YYYY-MM or YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
 
     from employees.models import EmployeeShiftSchedule
     from employees.serializers import EmployeeShiftScheduleSerializer
@@ -300,7 +291,7 @@ def get_monthly_roster(request):
     return Response(data)
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def assign_shift(request):
     from employees.models import EmployeeShiftSchedule, Employee, Shift, extract_actor_id
     from employees.serializers import EmployeeShiftScheduleSerializer

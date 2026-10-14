@@ -138,6 +138,8 @@ def today_status(request):
                         }
             except Exception:
                 pass
+            if d.weekday() in [5, 6]:
+                return {"name": "Week Off", "times": "-", "is_leave": False, "is_off": True, "start_time": None, "end_time": None}
             return {"name": "General", "times": "09:00 - 18:00", "is_leave": False, "is_off": False, "start_time": None, "end_time": None}
 
         today_shift = get_shift_for_date(today)
@@ -274,9 +276,12 @@ def today_status(request):
         elif yesterday_shift.get("is_off") or yesterday_shift["name"] in ["Not Assigned", "Off", "Week Off"]:
             yest_status = "Week Off"
 
-        # 6. Current Month Summary (PyMongo)
-        start_month = datetime.date(today.year, today.month, 1)
-        start_month_utc = ist_tz.localize(datetime.datetime.combine(start_month, datetime.time.min)).astimezone(pytz.UTC).replace(tzinfo=None)
+        # 6. Current Attendance Cycle Summary (Hospital 26th to 25th Cycle)
+        from employees.views.common.utils import get_current_active_cycle
+        target_cycle_month, cycle_from_str, cycle_to_str, _ = get_current_active_cycle()
+        cycle_start_d = datetime.datetime.strptime(cycle_from_str, "%Y-%m-%d").date()
+        cycle_end_d = datetime.datetime.strptime(cycle_to_str, "%Y-%m-%d").date()
+        start_month_utc = ist_tz.localize(datetime.datetime.combine(cycle_start_d, datetime.time.min)).astimezone(pytz.UTC).replace(tzinfo=None)
 
         month_punches_raw = list(attendance_col.find({
             'employee_id': emp_match,
@@ -353,7 +358,12 @@ def today_status(request):
                 else:
                     day_status = 'PRESENT'
             elif is_today:
-                day_status = 'TODAY_PENDING'
+                if d_shift.get("is_off"):
+                    day_status = 'OFF'
+                elif d_shift.get("is_leave"):
+                    day_status = 'ON_LEAVE'
+                else:
+                    day_status = 'TODAY_PENDING'
             elif d_shift.get("is_off"):
                 day_status = 'OFF'
             elif d_shift.get("is_leave"):
@@ -396,10 +406,13 @@ def today_status(request):
             "status_type": status_type,
             "today_punches": punches_list,
             "month_summary": {
-                "month_name": today.strftime("%B %Y"),
+                "month_name": f"{cycle_start_d.strftime('%d %b')} – {cycle_end_d.strftime('%d %b %Y')}",
+                "cycle_month": target_cycle_month,
+                "cycle_from": cycle_from_str,
+                "cycle_to": cycle_to_str,
                 "present_days": present_count,
                 "single_punches": single_punch_count,
-                "days_elapsed": today.day
+                "days_elapsed": max(1, (today - cycle_start_d).days + 1)
             },
             "yesterday": {
                 "shift_name": yesterday_shift["name"],

@@ -2,7 +2,7 @@ import os
 import uuid
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from employees.permissions import HasRoleAndDataPermission
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -45,7 +45,7 @@ def get_diagnostics_db():
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 @token_required
 def submit_permission_request(request):
     """
@@ -71,7 +71,8 @@ def submit_permission_request(request):
         if not reason:
             return Response({"error": "Reason for permission is mandatory."}, status=status.HTTP_400_BAD_REQUEST)
 
-        month_str = date_str[:7]
+        from employees.views.common.utils import get_cycle_for_date
+        month_str, cycle_from, cycle_to = get_cycle_for_date(date_str)
         db = get_diagnostics_db()
         requests_col = db['employees_permission_requests']
         approved_col = db['backend_diagnostics_permissions']
@@ -93,15 +94,15 @@ def submit_permission_request(request):
                 "error": f"Permission already requested or granted for {date_str}. (Max 1 permission per day allowed)."
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # 2. Check monthly quota (Max 2 permissions per month)
+        # 2. Check cycle quota (Max 2 permissions per attendance cycle: 26th to 25th)
         month_requests = list(requests_col.find({
             "employee_id": employee_id,
-            "month": month_str,
+            "date": {"$gte": cycle_from, "$lte": cycle_to},
             "status": {"$in": ["Pending", "Approved"]}
         }))
         month_approved = list(approved_col.find({
             "employeeId": employee_id,
-            "$or": [{"month": month_str}, {"date": {"$regex": f"^{month_str}"}}]
+            "date": {"$gte": cycle_from, "$lte": cycle_to}
         }))
 
         # Merge unique dates between collections
@@ -113,7 +114,7 @@ def submit_permission_request(request):
 
         if len(counted_dates) >= 2:
             return Response({
-                "error": f"Monthly limit reached: You have already used/requested all 2 permissions for {month_str}. (Maximum 2 hours per month)."
+                "error": f"Monthly limit reached: You have already used/requested 2 permissions for the {month_str} attendance cycle ({cycle_from} to {cycle_to}). (Maximum 2 hours per cycle)."
             }, status=status.HTTP_400_BAD_REQUEST)
 
         # Lookup employee name and department from profile
@@ -194,7 +195,7 @@ def submit_permission_request(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 @token_required
 def get_my_permission_requests(request):
     """
@@ -271,7 +272,7 @@ def get_my_permission_requests(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 @token_required
 def get_pending_permission_requests(request):
     """
@@ -379,7 +380,7 @@ def get_pending_permission_requests(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 @token_required
 def review_permission_request(request):
     """

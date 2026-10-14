@@ -206,7 +206,7 @@ def issue_canteen_token(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_canteen_today_summary(request):
     try:
         today = timezone.now().astimezone(IST).date()
@@ -239,7 +239,7 @@ def get_canteen_today_summary(request):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def get_canteen_token_history(request):
     try:
         employee_id = request.query_params.get('employee_id')
@@ -294,7 +294,7 @@ def get_canteen_token_history(request):
 
 
 @api_view(['GET', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([HasRoleAndDataPermission])
 def manage_canteen_rules(request):
     """
     GET or update canteen token quota rules.
