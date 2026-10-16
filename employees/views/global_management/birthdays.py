@@ -4,7 +4,7 @@ from employees.permissions import HasRoleAndDataPermission
 from django.http import JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 from employees.models import Profile
-from employees.views.common.utils import get_mongo_client, get_inactive_employee_ids
+from employees.views.common.utils import get_mongo_client, get_inactive_employee_ids, get_active_user_employee_ids
 
 try:
     import zoneinfo
@@ -128,11 +128,20 @@ def get_todays_birthdays(request):
 
         is_my_birthday = False
         inactive_ids = get_inactive_employee_ids()
+        active_user_ids = get_active_user_employee_ids()
 
         for prof in profiles:
-            emp_id = str(prof.get('employeeId') if isinstance(prof, dict) else getattr(prof, 'employeeId', '') or '')
-            if emp_id in inactive_ids:
+            emp_id = str(prof.get('employeeId') if isinstance(prof, dict) else getattr(prof, 'employeeId', '') or '').strip()
+            if not emp_id or emp_id in inactive_ids:
                 continue
+            if active_user_ids and emp_id not in active_user_ids:
+                continue
+            if (prof.get('is_active') if isinstance(prof, dict) else getattr(prof, 'is_active', None)) is False:
+                continue
+            prof_status = str(prof.get('status') if isinstance(prof, dict) else getattr(prof, 'status', '') or '').lower()
+            if prof_status in ['inactive', 'disabled', 'resigned', 'left']:
+                continue
+
             raw_dept = str(prof.get('department') if isinstance(prof, dict) else getattr(prof, 'department', '') or '')
             
             # Resolve department names
@@ -149,25 +158,12 @@ def get_todays_birthdays(request):
                 continue
 
             dob_raw = prof.get('dateOfBirth') if isinstance(prof, dict) else getattr(prof, 'dateOfBirth', None)
-            if not dob_raw:
-                continue
-
-            dob_date = None
-            if isinstance(dob_raw, datetime):
-                dob_date = dob_raw.date()
-            elif hasattr(dob_raw, 'date'):
-                dob_date = dob_raw.date()
-            elif isinstance(dob_raw, str):
-                try:
-                    dob_date = datetime.fromisoformat(dob_raw.replace('Z', '+00:00')).date()
-                except Exception:
-                    try:
-                        dob_date = datetime.strptime(dob_raw[:10], '%Y-%m-%d').date()
-                    except Exception:
-                        pass
-
+            dob_date = _parse_dob(dob_raw)
             if not dob_date:
                 continue
+
+            current_age = today.year - dob_date.year - ((today.month, today.day) < (dob_date.month, dob_date.day))
+            turning_age = today.year - dob_date.year if (dob_date.month, dob_date.day) >= (today.month, today.day) else (today.year - dob_date.year + 1)
 
             # Check if Today
             if dob_date.month == today.month and dob_date.day == today.day:
@@ -182,7 +178,16 @@ def get_todays_birthdays(request):
                     "email": prof.get('email') if isinstance(prof, dict) else prof.email,
                     "mobileNumber": prof.get('mobileNumber') if isinstance(prof, dict) else prof.mobileNumber,
                     "profileImage": prof.get('profileImage') if isinstance(prof, dict) else getattr(prof, 'profileImage', None),
-                    "dateOfBirth": dob_date.strftime("%d %b"),
+                    "dateOfBirth": dob_date.strftime("%Y-%m-%d"),
+                    "formatted_dob": dob_date.strftime("%d %b %Y"),
+                    "birthday_display": dob_date.strftime("%d %B"),
+                    "birthday_short": dob_date.strftime("%d %b"),
+                    "birth_day": dob_date.day,
+                    "birth_month": dob_date.month,
+                    "birth_year": dob_date.year,
+                    "year": dob_date.year,
+                    "age": current_age,
+                    "turning_age": turning_age,
                     "is_today": True
                 })
             else:
@@ -198,7 +203,19 @@ def get_todays_birthdays(request):
                             "employeeName": prof.get('employeeName') if isinstance(prof, dict) else prof.employeeName,
                             "department": display_dept,
                             "designation": display_desig,
-                            "dateOfBirth": dob_date.strftime("%d %b"),
+                            "email": prof.get('email') if isinstance(prof, dict) else getattr(prof, 'email', ''),
+                            "mobileNumber": prof.get('mobileNumber') if isinstance(prof, dict) else getattr(prof, 'mobileNumber', ''),
+                            "profileImage": prof.get('profileImage') if isinstance(prof, dict) else getattr(prof, 'profileImage', None),
+                            "dateOfBirth": dob_date.strftime("%Y-%m-%d"),
+                            "formatted_dob": dob_date.strftime("%d %b %Y"),
+                            "birthday_display": dob_date.strftime("%d %B"),
+                            "birthday_short": dob_date.strftime("%d %b"),
+                            "birth_day": dob_date.day,
+                            "birth_month": dob_date.month,
+                            "birth_year": dob_date.year,
+                            "year": dob_date.year,
+                            "age": current_age,
+                            "turning_age": turning_age,
                             "days_left": days_diff,
                             "is_today": False
                         })
@@ -272,11 +289,19 @@ def trigger_birthday_notifications_api(request):
             'employeeId': 1, 'employeeName': 1, 'dateOfBirth': 1, '_id': 0
         }))
         inactive_ids = get_inactive_employee_ids()
+        active_user_ids = get_active_user_employee_ids()
 
         today_celebrants = []
         for prof in profiles:
             emp_id = str(prof.get('employeeId') or '').strip()
             if not emp_id or emp_id in inactive_ids:
+                continue
+            if active_user_ids and emp_id not in active_user_ids:
+                continue
+            if prof.get('is_active') is False:
+                continue
+            prof_status = str(prof.get('status') or '').lower()
+            if prof_status in ['inactive', 'disabled', 'resigned', 'left']:
                 continue
             dob_raw = prof.get('dateOfBirth')
             dob_date = _parse_dob(dob_raw)
@@ -422,11 +447,20 @@ def _compute_birthdays(request):
 
     processed_profiles = []
     inactive_ids = get_inactive_employee_ids()
+    active_user_ids = get_active_user_employee_ids()
 
     for prof in profiles:
-        emp_id = str(prof.get('employeeId') if isinstance(prof, dict) else getattr(prof, 'employeeId', '') or '')
-        if emp_id in inactive_ids:
+        emp_id = str(prof.get('employeeId') if isinstance(prof, dict) else getattr(prof, 'employeeId', '') or '').strip()
+        if not emp_id or emp_id in inactive_ids:
             continue
+        if active_user_ids and emp_id not in active_user_ids:
+            continue
+        if (prof.get('is_active') if isinstance(prof, dict) else getattr(prof, 'is_active', None)) is False:
+            continue
+        prof_status = str(prof.get('status') if isinstance(prof, dict) else getattr(prof, 'status', '') or '').lower()
+        if prof_status in ['inactive', 'disabled', 'resigned', 'left']:
+            continue
+
         emp_name = str(prof.get('employeeName') if isinstance(prof, dict) else getattr(prof, 'employeeName', '') or '')
         raw_dept = str(prof.get('department') if isinstance(prof, dict) else getattr(prof, 'department', '') or '')
 
@@ -478,6 +512,8 @@ def _compute_birthdays(request):
             "birthday_short": dob_date.strftime("%d %b"),
             "birth_day": dob_date.day,
             "birth_month": dob_date.month,
+            "birth_year": dob_date.year,
+            "year": dob_date.year,
             "birth_month_name": MONTH_NAMES.get(dob_date.month, ""),
             "age": current_age,
             "turning_age": turning_age,

@@ -203,6 +203,31 @@ def _poll_and_dispatch(emp_name_cache):
         emp_name = _get_employee_name(db, emp_id, emp_name_cache)
         has_token = _check_employee_has_token(db, emp_id)
 
+        # Atomic deduplication: Ensure each attendence_id is processed EXACTLY ONCE
+        att_punch_id = rec.get('attendence_id')
+        if att_punch_id is not None:
+            try:
+                claim_result = db['attendance_notification_logs'].update_one(
+                    {'attendence_id': att_punch_id},
+                    {'$setOnInsert': {
+                        'attendence_id': att_punch_id,
+                        'employee_id': emp_id,
+                        'employee_name': emp_name,
+                        'punch_type': punch_type,
+                        'punch_time': time_str,
+                        'punch_date': date_str,
+                        'device_id': device_id,
+                        'has_push_token': has_token,
+                        'notified_at': datetime.now(IST)
+                    }},
+                    upsert=True
+                )
+                if claim_result.matched_count > 0:
+                    # Already processed by another worker/thread
+                    continue
+            except Exception as lock_err:
+                logger.error(f"[AttendanceListener] Error claiming punch {att_punch_id}: {lock_err}")
+
         # Build notification text
         if punch_type == 'IN':
             title = "Punch In Recorded ✅"
@@ -243,22 +268,6 @@ def _poll_and_dispatch(emp_name_cache):
                 print(f"📱 [AttendanceListener] Dispatched {punch_type} push notification to {emp_name} ({emp_id}) at {time_str}")
             except Exception as push_err:
                 logger.error(f"[AttendanceListener] Push dispatch failed for {emp_id}: {push_err}")
-
-        # Record activity log for frontend monitor
-        try:
-            db['attendance_notification_logs'].insert_one({
-                'attendence_id': rec.get('attendence_id'),
-                'employee_id': emp_id,
-                'employee_name': emp_name,
-                'punch_type': punch_type,
-                'punch_time': time_str,
-                'punch_date': date_str,
-                'device_id': device_id,
-                'has_push_token': has_token,
-                'notified_at': datetime.now(IST)
-            })
-        except Exception:
-            pass
 
     # 4. Save updated checkpoint
     if current_max_id > last_id:

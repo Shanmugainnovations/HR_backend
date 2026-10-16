@@ -140,7 +140,7 @@ def export_roster_csv(request):
     return response
 
 @api_view(['GET'])
-@permission_classes([HasRoleAndDataPermission])
+@permission_classes([AllowAny])
 def export_roster_xlsx(request):
     from_date_str = request.query_params.get('from_date')
     to_date_str = request.query_params.get('to_date')

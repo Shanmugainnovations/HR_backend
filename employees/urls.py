@@ -137,6 +137,7 @@ urlpatterns = [
     path('get_employees_with_labels/', views.get_employees_with_labels, name='get-employees-with-labels'),
     path('upload-gridfs/', views.upload_file, name='upload-gridfs'),
     path('gridfs/<str:file_id>/', views.serve_file, name='serve-gridfs-file'),
+    path('approver-hierarchy/', views.get_approver_hierarchy, name='approver-hierarchy'),
 
     # HR Helpdesk & Support Tickets
     path('helpdesk/categories/', views.get_helpdesk_categories, name='helpdesk-categories'),

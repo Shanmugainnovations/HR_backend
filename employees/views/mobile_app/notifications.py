@@ -62,19 +62,30 @@ def send_expo_push_notification(employee_ids, title, body, data=None):
             if str(eid).isdigit():
                 emp_matches.append(int(eid))
 
-        # 1. Fetch from employees_push_tokens
-        tokens_docs = list(col.find({"employee_id": {"$in": emp_matches}}, {"push_token": 1}))
-        push_tokens = [doc['push_token'] for doc in tokens_docs if doc.get('push_token')]
+        # 1. Fetch from employees_push_tokens - latest updated first
+        tokens_docs = list(col.find({"employee_id": {"$in": emp_matches}}).sort("updated_at_ts", -1))
+        
+        # Deduplicate to strictly the latest active token per employee to prevent duplicate alerts
+        seen_emps = set()
+        push_tokens = []
+        for doc in tokens_docs:
+            eid = str(doc.get('employee_id', ''))
+            tok = doc.get('push_token')
+            if tok and eid not in seen_emps:
+                seen_emps.add(eid)
+                push_tokens.append(tok)
 
-        # 2. Fallback / check backend_diagnostics_push_tokens as well
-        try:
-            diag_col = db['backend_diagnostics_push_tokens']
-            diag_docs = list(diag_col.find({"employee_id": {"$in": emp_matches}}, {"expo_push_token": 1}))
-            for d in diag_docs:
-                if d.get('expo_push_token'):
-                    push_tokens.append(d['expo_push_token'])
-        except Exception:
-            pass
+        # 2. Fallback to backend_diagnostics_push_tokens ONLY for employees with no active token in employees_push_tokens
+        missing_emps = [e for e in emp_matches if str(e) not in seen_emps]
+        if missing_emps:
+            try:
+                diag_col = db['backend_diagnostics_push_tokens']
+                diag_docs = list(diag_col.find({"employee_id": {"$in": missing_emps}}, {"expo_push_token": 1}))
+                for d in diag_docs:
+                    if d.get('expo_push_token') and d.get('expo_push_token') not in push_tokens:
+                        push_tokens.append(d['expo_push_token'])
+            except Exception:
+                pass
 
         push_tokens = list(set(push_tokens))
 
@@ -137,6 +148,12 @@ def register_push_token(request):
     try:
         col = get_notifications_collection().database['employees_push_tokens']
         now_dt = datetime.now()
+
+        # Remove stale/old tokens for this employee to prevent duplicate push delivery
+        col.delete_many({
+            "employee_id": str(emp_id),
+            "push_token": {"$ne": push_token}
+        })
 
         col.update_one(
             {"employee_id": str(emp_id), "push_token": push_token},

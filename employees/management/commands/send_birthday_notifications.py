@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone, timedelta
 from django.core.management.base import BaseCommand
-from employees.views.common.utils import get_mongo_client, get_inactive_employee_ids
+from employees.views.common.utils import get_mongo_client, get_inactive_employee_ids, get_active_user_employee_ids
 from employees.views.global_management.birthdays import trigger_birthday_push_notifications, _parse_dob
 
 try:
@@ -25,14 +25,22 @@ class Command(BaseCommand):
             db = client[db_name]
 
             profiles = list(db['backend_diagnostics_profile'].find({}, {
-                'employeeId': 1, 'employeeName': 1, 'dateOfBirth': 1, '_id': 0
+                'employeeId': 1, 'employeeName': 1, 'dateOfBirth': 1, 'is_active': 1, 'status': 1, '_id': 0
             }))
             inactive_ids = get_inactive_employee_ids()
+            active_user_ids = get_active_user_employee_ids()
 
             today_celebrants = []
             for prof in profiles:
                 emp_id = str(prof.get('employeeId') or '').strip()
                 if not emp_id or emp_id in inactive_ids:
+                    continue
+                if active_user_ids and emp_id not in active_user_ids:
+                    continue
+                if prof.get('is_active') is False:
+                    continue
+                prof_status = str(prof.get('status') or '').lower()
+                if prof_status in ['inactive', 'disabled', 'resigned', 'left']:
                     continue
 
                 dob_raw = prof.get('dateOfBirth')
