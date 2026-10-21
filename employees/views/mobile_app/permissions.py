@@ -304,7 +304,13 @@ def get_pending_permission_requests(request):
         db = get_diagnostics_db()
         requests_col = db['employees_permission_requests']
 
-        query = {"status": "Pending"}
+        status_param = request.GET.get('status')
+        if status_param and status_param != 'All':
+            query = {"status": status_param}
+        elif status_param == 'All':
+            query = {}
+        else:
+            query = {"status": "Pending"}
 
         if is_avp or is_admin:
             # AVP / Admin: Can view all pending permissions

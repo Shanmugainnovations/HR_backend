@@ -218,11 +218,12 @@ def today_status(request):
             worked_mins = int(total_sec // 60)
             progress_pct = min(100.0, max(5.0, round((worked_mins / 480.0) * 100, 1)))
 
-            # Late login calculation
+            # Late login calculation (10 mins grace period from shift start)
             if today_shift.get("start_time"):
                 s_start = ist_tz.localize(datetime.datetime.combine(today, today_shift["start_time"]))
-                if first_in > s_start + datetime.timedelta(minutes=10):
-                    today_late_mins = int((first_in - s_start).total_seconds() // 60)
+                grace_start = s_start + datetime.timedelta(minutes=10)
+                if first_in > grace_start:
+                    today_late_mins = int((first_in - grace_start).total_seconds() // 60)
                     lh = today_late_mins // 60
                     lm = today_late_mins % 60
                     today_late_str = f"{lh}h {lm}m" if lh > 0 else f"{lm}m"
@@ -337,8 +338,9 @@ def today_status(request):
 
                 if d_shift.get("start_time"):
                     st = ist_tz.localize(datetime.datetime.combine(day_date, d_shift["start_time"]))
-                    if f_in > st + datetime.timedelta(minutes=10):
-                        day_late = int((f_in - st).total_seconds() // 60)
+                    grace_st = st + datetime.timedelta(minutes=10)
+                    if f_in > grace_st:
+                        day_late = int((f_in - grace_st).total_seconds() // 60)
 
                 if d_shift.get("end_time") and l_out:
                     et = ist_tz.localize(datetime.datetime.combine(day_date, d_shift["end_time"]))

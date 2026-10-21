@@ -13,6 +13,8 @@ class EmployeesConfig(AppConfig):
         # so we don't pay the model-load cost when we're not actually serving requests.
         if len(sys.argv) > 1 and sys.argv[1] not in ('runserver', 'run_gunicorn'):
             return
+        if 'runserver' in sys.argv and os.environ.get('RUN_MAIN') != 'true':
+            return
         if os.environ.get('RUN_MAIN') == 'false':
             return
 

@@ -352,14 +352,16 @@ def roster_attendance_report(request):
                     if last_punch_time < shift_start:
                         punch_out_dt += timedelta(days=1)
                         
-                    late_seconds = (punch_in_dt - shift_start_dt).total_seconds()
+                    # 10 mins grace time from shift start
+                    grace_start_dt = shift_start_dt + timedelta(minutes=10)
+                    late_seconds = (punch_in_dt - grace_start_dt).total_seconds()
                     early_seconds = (shift_end_dt - punch_out_dt).total_seconds()
 
                     late_mins = int(late_seconds // 60) if late_seconds > 0 else 0
                     early_mins = int(early_seconds // 60) if early_seconds > 0 else 0
 
-                    # Strict exception rule: Only strictly greater than 10 mins (> 10 mins, not <= 10 or == 10)
-                    is_late_login = late_mins > 10
+                    # Only late if arriving strictly after the 10-min grace period
+                    is_late_login = late_mins > 0
                     is_early_checkout = early_mins > 10
 
                     dev_parts = []

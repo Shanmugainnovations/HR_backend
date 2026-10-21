@@ -118,11 +118,12 @@ def my_attendance_report(request):
                 first_in_ist = check_in.astimezone(ist_tz)
                 last_out_ist = check_out.astimezone(ist_tz) if check_out else None
 
-                # Calculate late entry
+                # Calculate late entry (10 mins grace period from shift start)
                 if has_actual_shift_timing and shift.start_time:
                     shift_start_dt = ist_tz.localize(datetime.datetime.combine(curr_date, shift.start_time))
-                    if first_in_ist > shift_start_dt + datetime.timedelta(minutes=10):
-                        late_mins = int((first_in_ist - shift_start_dt).total_seconds() // 60)
+                    grace_start_dt = shift_start_dt + datetime.timedelta(minutes=10)
+                    if first_in_ist > grace_start_dt:
+                        late_mins = int((first_in_ist - grace_start_dt).total_seconds() // 60)
                         h = late_mins // 60
                         m = late_mins % 60
                         late_str = f"{h}h {m}m" if h > 0 else f"{m}m"

@@ -11,7 +11,7 @@ from gridfs import GridFS
 from django.http import HttpResponse, Http404
 from django.contrib.auth.hashers import make_password, check_password, identify_hasher
 from rest_framework.decorators import api_view, permission_classes
-from employees.permissions import HasRoleAndDataPermission
+from employees.permissions import HasRoleAndDataPermission, AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -234,7 +234,7 @@ def get_full_employee_profile(request):
 
 
 @api_view(['GET'])
-@permission_classes([HasRoleAndDataPermission])
+@permission_classes([AllowAny])
 def serve_employee_profile_photo(request, employee_id):
     """
     Direct image serving view for employee:

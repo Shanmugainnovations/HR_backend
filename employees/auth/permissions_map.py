@@ -160,7 +160,6 @@ PAGE_MAPPING = {
     '/_b_a_c_k_e_n_d/HRA/employee/my-attendance/': 'GL-P-EP',
     '/_b_a_c_k_e_n_d/HRA/employee/full-profile/.*': 'GL-P-EP',
     '/_b_a_c_k_e_n_d/HRA/employee/full-profile/': 'GL-P-EP',
-    '/_b_a_c_k_e_n_d/HRA/employee-profile-photo/.*': 'GL-P-EP',
     '/_b_a_c_k_e_n_d/HRA/change-password/.*': 'GL-P-EP',
     '/_b_a_c_k_e_n_d/HRA/change-password/': 'GL-P-EP',
     '/_b_a_c_k_e_n_d/HRA/employee/notifications/.*': 'GL-P-EP',
@@ -211,6 +210,10 @@ PAGE_MAPPING = {
     '/_b_a_c_k_e_n_d/HRA/departments/': 'GL-P-BD',
     '/_b_a_c_k_e_n_d/HRA/global-departments/.*': 'GL-P-BD',
     '/_b_a_c_k_e_n_d/HRA/global-departments/': 'GL-P-BD',
+    '/_b_a_c_k_e_n_d/HRA/approver-hierarchy/.*': 'GL-P-BD',
+    '/_b_a_c_k_e_n_d/HRA/approver-hierarchy/': 'GL-P-BD',
+    '/_b_a_c_k_e_n_d/HR/approver-hierarchy/.*': 'GL-P-BD',
+    '/_b_a_c_k_e_n_d/HR/approver-hierarchy/': 'GL-P-BD',
 
     # =============================================================
     # 11. EMPLOYEE DIRECTORY & PROFILES (Existing Global Codes)

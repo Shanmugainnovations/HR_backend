@@ -336,6 +336,44 @@ def get_inactive_employee_ids():
     return inactive_ids
 
 
+def get_active_user_employee_ids():
+    """
+    Returns a set of employee IDs (strings) where is_active is explicitly True
+    in backend_diagnostics_user across Global database and Django User model.
+    """
+    active_ids = set()
+    client = get_mongo_client()
+    if client:
+        try:
+            global_db_name = os.environ.get("GLOBAL_DB_NAME", "Global")
+            db_global = client[global_db_name]
+            if 'backend_diagnostics_user' in db_global.list_collection_names():
+                for d in db_global['backend_diagnostics_user'].find(
+                    {
+                        '$or': [
+                            {'is_active': True},
+                            {'is_active': 'true'},
+                            {'is_active': 'True'},
+                            {'is_active': 1}
+                        ]
+                    },
+                    {'employeeId': 1, 'employee_id': 1, '_id': 0}
+                ):
+                    eid = str(d.get('employeeId') or d.get('employee_id') or '').strip()
+                    if eid:
+                        active_ids.add(eid)
+        except Exception:
+            pass
+    try:
+        from employees.models import user as UserModel
+        for eid in UserModel.objects.filter(is_active=True).values_list('employeeId', flat=True):
+            if eid:
+                active_ids.add(str(eid).strip())
+    except Exception:
+        pass
+    return active_ids
+
+
 def get_request_user_hod_departments(request):
     """
     Identifies if the requester is an HOD, and returns:
