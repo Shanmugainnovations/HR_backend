@@ -188,6 +188,7 @@ def my_leaves(request):
             "department_code": l.department_id or l.department,
             "start_date": l.start_date,
             "end_date": l.end_date,
+            "days_requested": (l.end_date - l.start_date).days + 1 if (l.start_date and l.end_date) else 1,
             "leave_type": l.leave_type,
             "reason": l.reason,
             "status": l.status,
@@ -317,6 +318,7 @@ def pending_leaves(request):
             "department_code": l.department_id or l.department,
             "start_date": l.start_date,
             "end_date": l.end_date,
+            "days_requested": (l.end_date - l.start_date).days + 1 if (l.start_date and l.end_date) else 1,
             "leave_type": l.leave_type,
             "reason": l.reason,
             "status": l.status,
@@ -414,6 +416,7 @@ def leave_history(request):
             "department_code": l.department_id or l.department,
             "start_date": l.start_date,
             "end_date": l.end_date,
+            "days_requested": (l.end_date - l.start_date).days + 1 if (l.start_date and l.end_date) else 1,
             "leave_type": l.leave_type,
             "reason": l.reason,
             "status": l.status,
@@ -519,7 +522,26 @@ def update_leave_status(request, leave_id):
                 end_date_obj = leave.end_date
                 
                 leave_shift = Shift.objects.filter(name__iexact=leave.leave_type).first()
+                if not leave_shift:
+                    lt_upper = str(leave.leave_type or '').upper()
+                    if 'SICK' in lt_upper or 'SL' in lt_upper:
+                        leave_shift = Shift.objects.filter(name='SL').first()
+                    elif 'EARN' in lt_upper or 'EL' in lt_upper:
+                        leave_shift = Shift.objects.filter(name='EL').first()
+                    elif 'HOLIDAY' in lt_upper or 'PH' in lt_upper or 'NH' in lt_upper:
+                        leave_shift = Shift.objects.filter(name='PH').first()
+                    elif 'COMP' in lt_upper or 'COL' in lt_upper:
+                        leave_shift = Shift.objects.filter(name='COL').first()
+
                 employee_obj = Employee.objects.filter(employee_id=leave.employee_id).first()
+                if not employee_obj and leave.employee_id:
+                    reg_u = Register.objects.filter(employee_id=str(leave.employee_id).strip()).first()
+                    employee_obj = Employee.objects.create(
+                        employee_id=str(leave.employee_id).strip(),
+                        name=leave.employee_name or (reg_u.name if reg_u else f"Employee {leave.employee_id}"),
+                        department=leave.department or (reg_u.department if reg_u else "General"),
+                        is_active=True
+                    )
                 
                 if leave_shift and employee_obj:
                     current_date = start_date_obj
@@ -562,15 +584,19 @@ def update_leave_status(request, leave_id):
                     leave_days = 1.0
 
                 ltype_upper = str(leave.leave_type or '').upper().strip()
-                type_key = 'EL'
+                type_key = None
                 if 'NH' in ltype_upper or 'HOLIDAY' in ltype_upper or 'PH' in ltype_upper:
                     type_key = 'NH'
-                elif 'SL' in ltype_upper or 'SICK' in ltype_upper or 'CL' in ltype_upper or 'CASUAL' in ltype_upper or 'C' in ltype_upper:
+                elif 'SL' in ltype_upper or 'SICK' in ltype_upper:
                     type_key = 'SL'
                 elif 'EL' in ltype_upper or 'EARNED' in ltype_upper:
                     type_key = 'EL'
+                elif 'CL' in ltype_upper or 'CASUAL' in ltype_upper:
+                    type_key = 'SL'
+                elif 'COL' in ltype_upper or 'COMP' in ltype_upper:
+                    type_key = None  # Comp-off does not deduct from annual quota
 
-                if bal_doc:
+                if bal_doc and type_key:
                     lb = bal_doc.get('leave_balances', {})
                     current_val = float(lb.get(type_key, lb.get(type_key.lower(), 0.0)))
                     new_val = max(0.0, current_val - leave_days)

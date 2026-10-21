@@ -33,12 +33,27 @@ class HasRoleAndDataPermission(permissions.BasePermission):
                 print(f"HasRoleAndDataPermission: Access not allowed. Reason: Missing Authorization token for {request.get_full_path()}")
                 return False
 
-            branch_code = (
+            raw_branch = (
                 request.headers.get("Branch-Code")
                 or request.headers.get("branch-code")
                 or request.META.get("HTTP_BRANCH_CODE")
-                or "SHB001"
+                or ""
             )
+            branch_code = str(raw_branch).strip()
+            if branch_code.lower() in ["null", "undefined", "", "none"]:
+                branch_code = None
+
+            if not branch_code:
+                try:
+                    import jwt
+                    unverified = jwt.decode(token, options={"verify_signature": False})
+                    allowed_data = unverified.get("allowed-data") or []
+                    if allowed_data and isinstance(allowed_data, list):
+                        branch_code = allowed_data[0]
+                except Exception:
+                    pass
+                if not branch_code:
+                    branch_code = "SHB001"
             page_path = request.get_full_path()
             http_method = request.method
 
