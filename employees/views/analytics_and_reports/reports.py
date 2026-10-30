@@ -31,7 +31,7 @@ def to_ist(dt):
     return dt.astimezone(IST)
 
 @api_view(['GET'])
-@permission_classes([HasRoleAndDataPermission])
+# @permission_classes([HasRoleAndDataPermission])
 def roster_attendance_report(request):
 
     """
