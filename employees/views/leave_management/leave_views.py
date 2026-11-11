@@ -1303,14 +1303,16 @@ def leave_policies(request):
             {'month': 12, 'month_name': 'December', 'el': 1.0, 'nh': 1.0, 'sl': 1.0, 'total': 3.0},
         ]
 
-        excel_path = '/Users/parthibanmurugan/Desktop/Live Projects/HR/EL and NH details to IT main.xlsx'
+        excel_path = '/Users/parthibanmurugan/Desktop/Live Projects/HR/EL and NH details updated 10.11.2026 to IT.xlsx'
+        if not os.path.exists(excel_path):
+            excel_path = '/Users/parthibanmurugan/Desktop/Live Projects/HR/EL and NH details to IT main.xlsx'
         excel_info = {
             'exists': os.path.exists(excel_path),
-            'filename': 'EL and NH details to IT main.xlsx',
-            'total_employees': 274,
-            'total_eligible_leaves': 7763.0,
-            'total_used_leaves': 1351.0,
-            'total_pending_leaves': 6412.0
+            'filename': os.path.basename(excel_path),
+            'total_employees': 289,
+            'total_eligible_leaves': 7870.0,
+            'total_used_leaves': 1519.0,
+            'total_pending_leaves': 6351.0
         }
 
         return Response({
@@ -1484,14 +1486,18 @@ def sync_all_leave_balances(request):
     excel_synced_count = 0
     excel_emp_codes = set()
 
-    # 1. Sync from master Excel file 'EL and NH details to IT main.xlsx' if exists
-    excel_path = '/Users/parthibanmurugan/Desktop/Live Projects/HR/EL and NH details to IT main.xlsx'
+    # 1. Sync from master Excel file 'EL and NH details updated 10.11.2026 to IT.xlsx' if exists
+    excel_path = '/Users/parthibanmurugan/Desktop/Live Projects/HR/EL and NH details updated 10.11.2026 to IT.xlsx'
+    if not os.path.exists(excel_path):
+        excel_path = '/Users/parthibanmurugan/Desktop/Live Projects/HR/EL and NH details to IT main.xlsx'
+
     if os.path.exists(excel_path) and (not department_filter or department_filter == 'ALL'):
         try:
             import openpyxl
             wb = openpyxl.load_workbook(excel_path, data_only=True)
             ws = wb['Final']
             now = datetime.now()
+            source_filename = os.path.basename(excel_path)
 
             for r in range(3, ws.max_row + 1):
                 val = ws.cell(r, 2).value
@@ -1500,7 +1506,9 @@ def sync_all_leave_balances(request):
                 code = str(val).strip()
                 excel_emp_codes.add(code)
                 name = ws.cell(r, 4).value
-                desig = ws.cell(r, 6).value
+                col5_val = ws.cell(r, 5).value
+                col6_val = ws.cell(r, 6).value
+                desig = col5_val if (col5_val and not any(ch.isdigit() for ch in str(col5_val))) else col6_val
                 doj_val = ws.cell(r, 3).value
 
                 used_nh = float(ws.cell(r, 7).value or 0)
@@ -1522,7 +1530,7 @@ def sync_all_leave_balances(request):
                     'employee_name': name or (existing.get('employee_name') if existing else code),
                     'designation': desig or (existing.get('designation') if existing else ''),
                     'as_of_year': now.year,
-                    'source_file': 'EL and NH details to IT main.xlsx',
+                    'source_file': source_filename,
                     'eligible_entitlement': {
                         'EL': elig_el,
                         'NH': elig_nh,
@@ -1544,7 +1552,31 @@ def sync_all_leave_balances(request):
                     'updated_at': now
                 }
                 if doj_val:
-                    payload['doj'] = doj_val.strftime('%Y-%m-%d') if isinstance(doj_val, datetime) else str(doj_val)
+                    if isinstance(doj_val, datetime):
+                        payload['doj'] = doj_val.strftime('%Y-%m-%d')
+                    else:
+                        payload['doj'] = str(doj_val)
+
+                # Ensure department metadata is populated if missing
+                if not existing or not existing.get('department'):
+                    prof = db['backend_diagnostics_profile'].find_one({'employeeId': code})
+                    if prof:
+                        raw_dept = prof.get('department')
+                        dept_doc = db['backend_diagnostics_Departments'].find_one({'$or': [{'department_code': raw_dept}, {'department_name': raw_dept}]})
+                        payload['department'] = dept_doc.get('department_name') if dept_doc else raw_dept
+                        payload['department_code'] = raw_dept
+                        payload['raw_department'] = raw_dept
+                        payload['designation_code'] = prof.get('designation')
+                        payload['is_doctor'] = bool(prof.get('isDoctor'))
+                    else:
+                        # Fallback from excel columns
+                        dept_candidate = str(col6_val or '').strip()
+                        if 'nurs' in dept_candidate.lower():
+                            payload['department'] = 'Nursing'
+                            payload['department_code'] = 'DEPT003'
+                        elif dept_candidate:
+                            payload['department'] = dept_candidate
+                            payload['department_code'] = 'DEPT_AUTO'
 
                 if existing:
                     coll.update_one({'_id': existing['_id']}, {'$set': payload})
