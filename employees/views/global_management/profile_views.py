@@ -143,6 +143,32 @@ def parse_array_field(val):
     return []
 
 
+APPROVER_ROLES = {'HR-R-INC', 'HR-R-HOD', 'HR-R-AVP', 'SI-R-INDIN', 'ST-R-HOD', 'SIN-R-AVP', 'SD-R-MAVP'}
+APPROVER_KEYWORDS = ('INC', 'HOD', 'AVP')
+EMPLOYEE_ROLE_CODE = 'HR-R-EMP'
+
+def enforce_profile_role_rules(primary_role, additional_roles):
+    """
+    Enforces role hierarchy rules:
+    - If primary or additional role has Incharge, HOD, or AVP: do NOT include EMPLOYEE_ROLE_CODE.
+    - If none of the three exist: automatically ensure EMPLOYEE_ROLE_CODE is in additional_roles.
+    """
+    p_role = str(primary_role or '').strip()
+    clean_adds = list(dict.fromkeys(additional_roles or []))
+    all_combined = set([p_role.upper()] + [str(r).strip().upper() for r in clean_adds])
+
+    has_approver = any(
+        r in APPROVER_ROLES or any(kw in r for kw in APPROVER_KEYWORDS)
+        for r in all_combined
+    )
+
+    if has_approver:
+        clean_adds = [r for r in clean_adds if r != EMPLOYEE_ROLE_CODE]
+    else:
+        if EMPLOYEE_ROLE_CODE not in clean_adds and p_role != EMPLOYEE_ROLE_CODE:
+            clean_adds.append(EMPLOYEE_ROLE_CODE)
+
+    return clean_adds
 
 
 def _load_mongo_reference_data():
@@ -252,6 +278,7 @@ def create_employee(request):
         now_ist = datetime.utcnow()
 
         additional_roles = safe_json_load(data.get('additionalRoles'), [])
+        additional_roles = enforce_profile_role_rules(data.get('primaryRole'), additional_roles)
         data_entitlements = safe_json_load(data.get('dataEntitlements'), [])
         qualifications_data = safe_json_load(data.get('qualifications'), [])
         experiences_data = safe_json_load(data.get('experiences'), [])
@@ -391,6 +418,8 @@ def update_employee(request, employee_id):
         lastmodified_by = data.get('auth-user-id') or data.get('employee_id') or 'system'
 
         additional_roles = parse_array_field(data.get('additionalRoles')) if 'additionalRoles' in data else existing_doc.get('additionalRoles', [])
+        target_primary = data.get('primaryRole', existing_doc.get('primaryRole', ''))
+        additional_roles = enforce_profile_role_rules(target_primary, additional_roles)
         data_entitlements = parse_array_field(data.get('dataEntitlements')) if 'dataEntitlements' in data else existing_doc.get('dataEntitlements', [])
         qualifications_data = parse_array_field(data.get('qualifications')) if 'qualifications' in data else existing_doc.get('qualifications', [])
         experiences_data = parse_array_field(data.get('experiences')) if 'experiences' in data else existing_doc.get('experiences', [])
