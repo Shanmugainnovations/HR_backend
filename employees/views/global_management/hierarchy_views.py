@@ -29,25 +29,32 @@ def get_approver_hierarchy(request):
         global_db_name = os.environ.get('GLOBAL_DB_NAME', 'Global')
         db = client[global_db_name] if client else None
 
-        # 1. Department code to name lookup
+        # 1. Department code to name lookup & Designation code lookup
         dept_map = {}
+        desig_map = {}
         if db is not None:
             for d in db['backend_diagnostics_Departments'].find({}, {'department_code': 1, 'department_name': 1, '_id': 0}):
                 code = d.get('department_code')
                 if code:
                     dept_map[code] = d.get('department_name', code)
+            for dg in db['backend_diagnostics_Designation'].find({}, {'Designation_code': 1, 'designation': 1, '_id': 0}):
+                dcode = dg.get('Designation_code')
+                if dcode:
+                    desig_map[dcode] = dg.get('designation') or dcode
 
-        # 2. Active employees count per department & profiles
+        # 2. Active employees count per department & profiles & detailed employee lists
         active_user_ids = get_active_user_employee_ids()
         inactive_ids = get_inactive_employee_ids()
         dept_counts = {}
+        dept_employees = {}
         profile_map = {}
 
         if db is not None:
             profiles = list(db['backend_diagnostics_profile'].find({}, {
                 'employeeId': 1, 'employeeName': 1, 'department': 1,
                 'designation': 1, 'email': 1, 'mobileNumber': 1,
-                'profileImage': 1, 'is_active': 1, 'status': 1, '_id': 0
+                'profileImage': 1, 'primaryRole': 1, 'additionalRoles': 1,
+                'is_active': 1, 'status': 1, '_id': 0
             }))
             for p in profiles:
                 eid = str(p.get('employeeId') or '').strip()
@@ -59,13 +66,18 @@ def get_approver_hierarchy(request):
                 if p_status in ['inactive', 'disabled', 'resigned', 'left']:
                     continue
 
+                raw_desig = str(p.get('designation') or '').strip()
+                resolved_desig = desig_map.get(raw_desig, raw_desig)
+
                 profile_map[eid] = {
                     'name': p.get('employeeName') or '',
-                    'designation': p.get('designation') or '',
+                    'designation': resolved_desig,
                     'email': p.get('email') or '',
                     'mobile': p.get('mobileNumber') or '',
                     'profileImage': p.get('profileImage') or None,
-                    'department': str(p.get('department') or '').strip()
+                    'department': str(p.get('department') or '').strip(),
+                    'primaryRole': p.get('primaryRole') or '',
+                    'additionalRoles': p.get('additionalRoles') or []
                 }
 
                 raw_depts = str(p.get('department') or '').strip()
@@ -73,6 +85,18 @@ def get_approver_hierarchy(request):
                     c = c.strip()
                     if c:
                         dept_counts[c] = dept_counts.get(c, 0) + 1
+                        dept_employees.setdefault(c, []).append({
+                            'employee_id': eid,
+                            'name': p.get('employeeName') or '',
+                            'designation': resolved_desig,
+                            'department_code': c,
+                            'department_name': dept_map.get(c, c),
+                            'primaryRole': p.get('primaryRole') or '',
+                            'additionalRoles': p.get('additionalRoles') or [],
+                            'email': p.get('email') or '',
+                            'mobile': p.get('mobileNumber') or '',
+                            'profileImage': p.get('profileImage') or None,
+                        })
 
         # 3. Query AVPs, HODs, Incharges from Register
         avp_records = Register.objects.filter(role__in=['HR-R-AVP', 'AVP'])
@@ -217,13 +241,25 @@ def get_approver_hierarchy(request):
                     inc_dept_details = []
                     inc_staff_sum = 0
                     for dcode in target_depts:
-                        emp_cnt = dept_counts.get(dcode, 0)
+                        emps = dept_employees.get(dcode, [])
+                        emp_cnt = len(emps) if emps else dept_counts.get(dcode, 0)
                         inc_staff_sum += emp_cnt
                         inc_dept_details.append({
                             'department_code': dcode,
                             'department_name': dept_map.get(dcode, dcode),
-                            'employee_count': emp_cnt
+                            'employee_count': emp_cnt,
+                            'employees': emps
                         })
+
+                    # Unique employees under this incharge
+                    inc_all_emps = []
+                    inc_seen = set()
+                    for d in inc_dept_details:
+                        for em in d.get('employees', []):
+                            if em['employee_id'] not in inc_seen:
+                                inc_seen.add(em['employee_id'])
+                                inc_all_emps.append(em)
+                    inc_all_emps.sort(key=lambda x: x.get('name', '').lower())
 
                     matched_incharges.append({
                         'employee_id': inc['employee_id'],
@@ -234,23 +270,41 @@ def get_approver_hierarchy(request):
                         'email': inc['email'],
                         'mobile': inc['mobile'],
                         'departments_count': len(inc_dept_details),
-                        'total_staff_count': inc_staff_sum,
-                        'departments': inc_dept_details
+                        'total_staff_count': len(inc_all_emps) if inc_all_emps else inc_staff_sum,
+                        'departments': inc_dept_details,
+                        'employees': inc_all_emps
                     })
 
             direct_dept_codes = sorted(list(h_dept_set - covered_depts_by_incs))
             direct_dept_details = []
             direct_staff_sum = 0
             for dcode in direct_dept_codes:
-                emp_cnt = dept_counts.get(dcode, 0)
+                emps = dept_employees.get(dcode, [])
+                emp_cnt = len(emps) if emps else dept_counts.get(dcode, 0)
                 direct_staff_sum += emp_cnt
                 direct_dept_details.append({
                     'department_code': dcode,
                     'department_name': dept_map.get(dcode, dcode),
-                    'employee_count': emp_cnt
+                    'employee_count': emp_cnt,
+                    'employees': emps
                 })
 
-            hod_staff_total = sum(dept_counts.get(d, 0) for d in h_dept_set)
+            # Unique employees under this HOD
+            hod_all_emps = []
+            hod_seen = set()
+            for inc in matched_incharges:
+                for em in inc.get('employees', []):
+                    if em['employee_id'] not in hod_seen:
+                        hod_seen.add(em['employee_id'])
+                        hod_all_emps.append(em)
+            for d in direct_dept_details:
+                for em in d.get('employees', []):
+                    if em['employee_id'] not in hod_seen:
+                        hod_seen.add(em['employee_id'])
+                        hod_all_emps.append(em)
+            hod_all_emps.sort(key=lambda x: x.get('name', '').lower())
+
+            hod_staff_total = len(hod_all_emps) if hod_all_emps else sum(dept_counts.get(d, 0) for d in h_dept_set)
 
             return {
                 'hod_id': h['employee_id'],
@@ -267,7 +321,8 @@ def get_approver_hierarchy(request):
                 'total_staff_count': hod_staff_total,
                 'incharges': matched_incharges,
                 'direct_departments': direct_dept_details,
-                'all_department_codes': sorted(list(h_dept_set))
+                'all_department_codes': sorted(list(h_dept_set)),
+                'employees': hod_all_emps
             }
 
         # Build full AVP trees
@@ -307,13 +362,24 @@ def get_approver_hierarchy(request):
                         inc_staff_sum = 0
                         for dcode in sorted(list(overlap)):
                             covered_depts_by_direct_incs.add(dcode)
-                            emp_cnt = dept_counts.get(dcode, 0)
+                            emps = dept_employees.get(dcode, [])
+                            emp_cnt = len(emps) if emps else dept_counts.get(dcode, 0)
                             inc_staff_sum += emp_cnt
                             inc_dept_details.append({
                                 'department_code': dcode,
                                 'department_name': dept_map.get(dcode, dcode),
-                                'employee_count': emp_cnt
+                                'employee_count': emp_cnt,
+                                'employees': emps
                             })
+                        inc_all_emps = []
+                        inc_seen = set()
+                        for d in inc_dept_details:
+                            for em in d.get('employees', []):
+                                if em['employee_id'] not in inc_seen:
+                                    inc_seen.add(em['employee_id'])
+                                    inc_all_emps.append(em)
+                        inc_all_emps.sort(key=lambda x: x.get('name', '').lower())
+
                         direct_incharge_nodes.append({
                             'employee_id': inc['employee_id'],
                             'name': inc['name'],
@@ -323,8 +389,9 @@ def get_approver_hierarchy(request):
                             'email': inc['email'],
                             'mobile': inc['mobile'],
                             'departments_count': len(inc_dept_details),
-                            'total_staff_count': inc_staff_sum,
-                            'departments': inc_dept_details
+                            'total_staff_count': len(inc_all_emps) if inc_all_emps else inc_staff_sum,
+                            'departments': inc_dept_details,
+                            'employees': inc_all_emps
                         })
 
             # Direct Departments under AVP (neither HOD nor Incharge)
@@ -332,15 +399,37 @@ def get_approver_hierarchy(request):
             direct_dept_details = []
             direct_staff_sum = 0
             for dcode in direct_dept_codes:
-                emp_cnt = dept_counts.get(dcode, 0)
+                emps = dept_employees.get(dcode, [])
+                emp_cnt = len(emps) if emps else dept_counts.get(dcode, 0)
                 direct_staff_sum += emp_cnt
                 direct_dept_details.append({
                     'department_code': dcode,
                     'department_name': dept_map.get(dcode, dcode),
-                    'employee_count': emp_cnt
+                    'employee_count': emp_cnt,
+                    'employees': emps
                 })
 
-            avp_staff_total = sum(dept_counts.get(d, 0) for d in a_dept_set)
+            # Unique employees under this AVP
+            avp_all_emps = []
+            avp_seen = set()
+            for h_node in matched_hod_nodes:
+                for em in h_node.get('employees', []):
+                    if em['employee_id'] not in avp_seen:
+                        avp_seen.add(em['employee_id'])
+                        avp_all_emps.append(em)
+            for inc in direct_incharge_nodes:
+                for em in inc.get('employees', []):
+                    if em['employee_id'] not in avp_seen:
+                        avp_seen.add(em['employee_id'])
+                        avp_all_emps.append(em)
+            for d in direct_dept_details:
+                for em in d.get('employees', []):
+                    if em['employee_id'] not in avp_seen:
+                        avp_seen.add(em['employee_id'])
+                        avp_all_emps.append(em)
+            avp_all_emps.sort(key=lambda x: x.get('name', '').lower())
+
+            avp_staff_total = len(avp_all_emps) if avp_all_emps else sum(dept_counts.get(d, 0) for d in a_dept_set)
 
             avp_trees.append({
                 'avp_id': a['employee_id'],
@@ -359,7 +448,8 @@ def get_approver_hierarchy(request):
                 'hods': matched_hod_nodes,
                 'direct_incharges': direct_incharge_nodes,
                 'direct_departments': direct_dept_details,
-                'all_department_codes': sorted(list(a_dept_set))
+                'all_department_codes': sorted(list(a_dept_set)),
+                'employees': avp_all_emps
             })
 
         # HODs not under any AVP (Direct Institutional HODs)
@@ -378,13 +468,24 @@ def get_approver_hierarchy(request):
                 inc_dept_details = []
                 inc_staff_sum = 0
                 for dcode in inc['departments']:
-                    emp_cnt = dept_counts.get(dcode, 0)
+                    emps = dept_employees.get(dcode, [])
+                    emp_cnt = len(emps) if emps else dept_counts.get(dcode, 0)
                     inc_staff_sum += emp_cnt
                     inc_dept_details.append({
                         'department_code': dcode,
                         'department_name': dept_map.get(dcode, dcode),
-                        'employee_count': emp_cnt
+                        'employee_count': emp_cnt,
+                        'employees': emps
                     })
+                inc_all_emps = []
+                inc_seen = set()
+                for d in inc_dept_details:
+                    for em in d.get('employees', []):
+                        if em['employee_id'] not in inc_seen:
+                            inc_seen.add(em['employee_id'])
+                            inc_all_emps.append(em)
+                inc_all_emps.sort(key=lambda x: x.get('name', '').lower())
+
                 unassigned_incharge_nodes.append({
                     'employee_id': inc['employee_id'],
                     'name': inc['name'],
@@ -394,8 +495,9 @@ def get_approver_hierarchy(request):
                     'email': inc['email'],
                     'mobile': inc['mobile'],
                     'departments_count': len(inc_dept_details),
-                    'total_staff_count': inc_staff_sum,
-                    'departments': inc_dept_details
+                    'total_staff_count': len(inc_all_emps) if inc_all_emps else inc_staff_sum,
+                    'departments': inc_dept_details,
+                    'employees': inc_all_emps
                 })
 
         # 5. Extract User Context & Role-Based Filtering
@@ -543,27 +645,108 @@ def get_approver_hierarchy(request):
                 filtered_unassigned_incs = unassigned_incharge_nodes[:1] if unassigned_incharge_nodes else []
 
         elif effective_scope == 'EMPLOYEE':
-            # Find employee's department and build their line to Incharge -> HOD -> AVP
+            # Find employee's department and build their direct reporting line to HOD and AVP (no staff details for other employees)
             emp_prof = profile_map.get(logged_in_eid, {})
             emp_depts = [d.strip() for d in str(emp_prof.get('department') or '').split(',') if d.strip()]
+            target_code = emp_depts[0] if emp_depts else ''
+
+            target_hod_info = None
+            target_avp_info = None
+            target_inc_info = None
+
+            # 1. Search in AVP trees
+            for a in avp_trees:
+                if target_code in a['all_department_codes']:
+                    target_avp_info = {
+                        'employee_id': a['avp_id'],
+                        'name': a['avp_name'],
+                        'designation': a['designation'],
+                        'email': a['email'],
+                        'mobile': a['mobile'],
+                        'profileImage': a['profileImage']
+                    }
+                    for h in a['hods']:
+                        if target_code in h['all_department_codes']:
+                            target_hod_info = {
+                                'employee_id': h['hod_id'],
+                                'name': h['hod_name'],
+                                'designation': h['designation'],
+                                'email': h['email'],
+                                'mobile': h['mobile'],
+                                'profileImage': h['profileImage'],
+                                'primary_department_name': h['primary_department_name']
+                            }
+                            for inc in h['incharges']:
+                                if any(d['department_code'] == target_code for d in inc['departments']):
+                                    target_inc_info = {
+                                        'employee_id': inc['employee_id'],
+                                        'name': inc['name'],
+                                        'designation': inc['designation'],
+                                        'email': inc['email'],
+                                        'mobile': inc['mobile'],
+                                        'profileImage': inc['profileImage']
+                                    }
+                                    break
+                            break
+                    break
+
+            # 2. If not found in AVP trees, search in Direct Institutional HODs
+            if not target_hod_info:
+                for h in direct_hod_nodes:
+                    if target_code in h['all_department_codes']:
+                        target_hod_info = {
+                            'employee_id': h['hod_id'],
+                            'name': h['hod_name'],
+                            'designation': h['designation'],
+                            'email': h['email'],
+                            'mobile': h['mobile'],
+                            'profileImage': h['profileImage'],
+                            'primary_department_name': h['primary_department_name']
+                        }
+                        for inc in h['incharges']:
+                            if any(d['department_code'] == target_code for d in inc['departments']):
+                                target_inc_info = {
+                                    'employee_id': inc['employee_id'],
+                                    'name': inc['name'],
+                                    'designation': inc['designation'],
+                                    'email': inc['email'],
+                                    'mobile': inc['mobile'],
+                                    'profileImage': inc['profileImage']
+                                }
+                                break
+                        break
+
+            # 3. If still no incharge found, check unassigned incharges
+            if not target_inc_info:
+                for inc in unassigned_incharge_nodes:
+                    if any(d['department_code'] == target_code for d in inc['departments']):
+                        target_inc_info = {
+                            'employee_id': inc['employee_id'],
+                            'name': inc['name'],
+                            'designation': inc['designation'],
+                            'email': inc['email'],
+                            'mobile': inc['mobile'],
+                            'profileImage': inc['profileImage']
+                        }
+                        break
+
             reporting_chain = {
                 'level': 'EMPLOYEE',
-                'employee_name': emp_prof.get('name'),
-                'department_code': emp_depts[0] if emp_depts else '',
-                'department_name': dept_map.get(emp_depts[0], emp_depts[0]) if emp_depts else ''
+                'employee_id': logged_in_eid,
+                'employee_name': emp_prof.get('name') or '',
+                'designation': emp_prof.get('designation') or '',
+                'department_code': target_code,
+                'department_name': dept_map.get(target_code, target_code),
+                'profileImage': emp_prof.get('profileImage'),
+                'reporting_hod': target_hod_info,
+                'reporting_avp': target_avp_info,
+                'reporting_incharge': target_inc_info
             }
-            # Find which AVP covers this dept
-            if emp_depts:
-                target_code = emp_depts[0]
-                for a in avp_trees:
-                    if target_code in a['all_department_codes']:
-                        filtered_avp_trees = [a]
-                        break
-                if not filtered_avp_trees:
-                    for h in direct_hod_nodes:
-                        if target_code in h['all_department_codes']:
-                            filtered_direct_hods = [h]
-                            break
+
+            # For regular employee, do NOT return other employees or full staff tree
+            filtered_avp_trees = []
+            filtered_direct_hods = []
+            filtered_unassigned_incs = []
 
         # Calculate dynamic statistics based on effective scope
         total_staff_in_scope = 0
