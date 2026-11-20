@@ -1,6 +1,7 @@
 from employees.models import Employee
 import ast
 import os
+import hashlib
 from pymongo import MongoClient
 
 _MONGO_CLIENT = None
@@ -17,15 +18,19 @@ def get_mongo_client():
             _MONGO_CLIENT = MongoClient(mongo_uri)
     return _MONGO_CLIENT
 
+def compute_md5(file_obj):
+    """Compute MD5 hash of an uploaded image or file."""
+    md5 = hashlib.md5()
+    for chunk in file_obj.chunks() if hasattr(file_obj, 'chunks') else iter(lambda: file_obj.read(4096), b""):
+        md5.update(chunk)
+    file_obj.seek(0)
+    return md5.hexdigest()
+
 MAX_FACE_ENCODINGS = 5
 
-def save_or_update_encoding(employee_id, encoding, created_by=None, name=None, image_md5=None, encoding_list=None):
+def save_or_update_encoding(employee_id, encoding=None, created_by=None, name=None, image_md5=None, encoding_list=None):
     """
-    encoding: primary encoding (used for current_face_encoding, kept for backward compatibility
-        with every existing caller/endpoint that reads current_face_encoding).
-    encoding_list: optional list of encodings (e.g. from multiple registration photos) to store
-        in face_encodings for 1:N matching. If omitted, defaults to [encoding] so face_encodings
-        stays in sync with the single-encoding callers that already exist.
+    Kept for backward-compatibility with callers saving employee profile data.
     """
     encodings_to_save = (encoding_list or ([encoding] if encoding else []))[:MAX_FACE_ENCODINGS]
     primary_encoding = encodings_to_save[0] if encodings_to_save else encoding
@@ -42,20 +47,13 @@ def save_or_update_encoding(employee_id, encoding, created_by=None, name=None, i
     )
 
     if not created:
-        # Update existing record
         emp.name = name or emp.name
         emp.face_encodings = encodings_to_save
-        emp.update_encoding(primary_encoding, new_image_md5=image_md5)
-        emp.is_active = True  # Always reactivate if updating face
+        if primary_encoding:
+            emp.update_encoding(primary_encoding, new_image_md5=image_md5)
+        emp.is_active = True
         emp.lastmodified_by = created_by
         emp.save(update_fields=['name', 'lastmodified_by', 'lastmodified_date', 'image_md5', 'is_active', 'face_encodings'])
-
-    # ✅ Force refresh the encoding cache in attendance view
-    try:
-        from employees.views.attendance_management.attendance import get_optimized_encodings
-        get_optimized_encodings(force_refresh=True)
-    except ImportError:
-        pass
 
     return emp
 

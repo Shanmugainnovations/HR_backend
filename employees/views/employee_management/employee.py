@@ -21,9 +21,7 @@ from rest_framework import status
 
 from employees.models import Employee
 from employees.serializers import EmployeeCreateSerializer
-from employees.face_utils import imagefile_to_encoding, compute_md5
-
-from employees.views.common.utils import save_or_update_encoding, get_mongo_client, sync_employee_status
+from employees.views.common.utils import compute_md5, save_or_update_encoding, get_mongo_client, sync_employee_status
 
 load_dotenv()
 
@@ -62,7 +60,7 @@ def get_all_employees_with_images(request):
                 valid_terms = [t for t in requested_terms if t in assigned_departments]
                 department = ",".join(valid_terms) if valid_terms else ",".join(assigned_departments)
 
-        employees = Employee.objects.filter(current_face_encoding__isnull=False).order_by("employee_id")
+        employees = Employee.objects.all().order_by("employee_id")
 
         if department and department != 'All':
             from employees.views.common.utils import resolve_department_filter
@@ -414,24 +412,10 @@ DEDUP_DISTANCE_THRESHOLD = 0.15  # skip a candidate nearly identical to one alre
 
 def _select_face_frames(images_list, lenient):
     """
-    Pure selection step, no DB/GridFS writes: decodes each candidate photo, encodes it, and
-    keeps up to MAX_FACE_ENCODINGS frames (skipping near-duplicates when lenient). Shared by
-    the preview endpoint (called right after a 5s recording finishes, so the frontend can show
-    which frames would be used before the user even hits Register/Update) and the actual
-    registration endpoint below.
-
-    Returns (kept, skipped, error):
-      kept: list of {"index", "decoded_img", "ext", "encoding"} for the frames selected
-      skipped: count of candidate frames that were decoded/tried but not kept
-      error: None on success, else a user-facing message and `kept` is []
+    Stub kept for compatibility: returns provided frames directly without ML face encoding.
     """
     kept = []
-    skipped = 0
-
     for idx, raw_image in enumerate(images_list):
-        if len(kept) >= MAX_FACE_ENCODINGS:
-            break
-
         try:
             if ';base64,' in raw_image:
                 header, base64_str = raw_image.split(';base64,')
@@ -440,74 +424,29 @@ def _select_face_frames(images_list, lenient):
                 base64_str = raw_image
                 ext = 'jpg'
             decoded_img = base64.b64decode(base64_str)
-        except Exception as e:
-            if lenient:
-                skipped += 1
-                continue
-            return [], skipped, f"Failed to decode image #{idx + 1}: {str(e)}"
-
-        encoding, is_real = imagefile_to_encoding(decoded_img)
-        if not encoding:
-            if lenient:
-                skipped += 1
-                continue
-            return [], skipped, f"No face detected in photo #{idx + 1} of {len(images_list)}. Please retake."
-
-        # Skip near-duplicate frames so the kept encodings represent genuinely different
-        # angles/moments instead of several near-identical consecutive video frames.
-        if lenient and kept:
-            enc_arr = np.array(encoding)
-            too_similar = any(
-                np.linalg.norm(enc_arr - np.array(k['encoding'])) < DEDUP_DISTANCE_THRESHOLD
-                for k in kept
-            )
-            if too_similar:
-                skipped += 1
-                continue
-
-        kept.append({"index": idx, "decoded_img": decoded_img, "ext": ext, "encoding": encoding})
-
-    if not kept or (lenient and len(kept) < MIN_FACE_ENCODINGS_LENIENT):
-        return [], skipped, "Couldn't get enough clear face shots from the recording. Please retry with steady framing and good lighting."
-
-    return kept, skipped, None
+            kept.append({"index": idx, "decoded_img": decoded_img, "ext": ext, "encoding": []})
+        except Exception:
+            continue
+    return kept, 0, None
 
 
 @api_view(['POST'])
 @permission_classes([HasRoleAndDataPermission])
 def preview_face_frames(request):
     """
-    Given a batch of candidate photos (e.g. frames auto-sampled from a 5s recording), returns
-    which ones would be selected for registration - without saving anything. Lets the frontend
-    show the picked photos right after the recording finishes, before the user submits.
+    Stub for preview-face-frames. Returns frame indices directly.
     """
-    images_list = request.data.get('images')
-    if not isinstance(images_list, list) or len(images_list) == 0:
-        return JsonResponse({"error": "images is required"}, status=400)
-
-    images_list = [img for img in images_list if img]
-    if not images_list:
-        return JsonResponse({"error": "No images provided"}, status=400)
-
-    lenient = len(images_list) > MAX_FACE_ENCODINGS
-    kept, skipped, error = _select_face_frames(images_list, lenient)
-    if error:
-        return JsonResponse({"error": error}, status=400)
-
+    images_list = request.data.get('images', [])
     return JsonResponse({
         "success": True,
-        "selected_frame_indices": [item["index"] for item in kept],
-        "frames_skipped": skipped
+        "selected_frame_indices": list(range(len(images_list))),
+        "frames_skipped": 0
     })
 
 
 def _register_employee_multi(request, images_list):
     """
-    Registration path for multiple photos captured at once (e.g. 3 manual angle shots,
-    or ~7-8 frames auto-sampled from a 5-second webcam "recording" on the frontend).
-    Each photo is separately encoded; all valid encodings are stored so 1:N matching
-    (see get_optimized_encodings/match_face_1_to_n) can compare against every angle.
-    Leaves the single-image `register_employee` path below completely untouched.
+    Multi-photo registration without face recognition. Saves uploaded images to GridFS.
     """
     employee_id = request.data.get('employee_id')
     name = request.data.get('name', '')
@@ -519,16 +458,7 @@ def _register_employee_multi(request, images_list):
     if not images_list:
         return JsonResponse({"error": "No images provided"}, status=400)
 
-    # The manual 3-click flow sends exactly MAX_FACE_ENCODINGS frames, each already
-    # confirmed by the user via "Use This Photo" - keep that strict (any failure rejects
-    # the whole batch, as before). An auto-captured 5s recording sends more candidate
-    # frames than that, and can't guarantee every single frame has a clean face (blinks,
-    # motion blur) - so we're lenient there: keep the best successful ones, skip the rest.
-    lenient = len(images_list) > MAX_FACE_ENCODINGS
-
-    kept, skipped, error = _select_face_frames(images_list, lenient)
-    if error:
-        return JsonResponse({"error": error}, status=400)
+    kept, skipped, error = _select_face_frames(images_list, False)
 
     try:
         global_db = os.getenv("HR_DB_NAME", "HR")
@@ -538,9 +468,7 @@ def _register_employee_multi(request, images_list):
     except Exception as e:
         return JsonResponse({"error": f"Failed to connect to image storage: {str(e)}"}, status=500)
 
-    encodings = []
     gridfs_ids = []
-    selected_indices = []
     primary_md5 = None
 
     for item in kept:
@@ -552,24 +480,21 @@ def _register_employee_multi(request, images_list):
             employeeId=employee_id,
             md5=image_md5
         )
-
-        encodings.append(item["encoding"])
         gridfs_ids.append(str(gridfs_file_id))
-        selected_indices.append(item["index"])
         if primary_md5 is None:
             primary_md5 = image_md5
 
     try:
         emp = save_or_update_encoding(
             employee_id,
-            encodings[0],
+            None,
             created_by=request.user if request.user.is_authenticated else None,
             name=name,
             image_md5=primary_md5,
-            encoding_list=encodings
+            encoding_list=[]
         )
     except Exception as e:
-        return JsonResponse({"error": f"Failed to save encodings: {str(e)}"}, status=500)
+        return JsonResponse({"error": f"Failed to save record: {str(e)}"}, status=500)
 
     return JsonResponse({
         "success": True,
@@ -577,12 +502,9 @@ def _register_employee_multi(request, images_list):
         "name": emp.name,
         "image_md5": emp.image_md5,
         "gridfs_image_ids": gridfs_ids,
-        "encodings_saved": len(emp.face_encodings or []),
-        "frames_skipped": skipped,
-        # Position of each kept frame within the submitted `images` array, so the frontend
-        # can show exactly which photos were used out of everything it sent (e.g. which
-        # frames out of a 5s recording were actually picked for encoding).
-        "selected_frame_indices": selected_indices
+        "encodings_saved": 0,
+        "frames_skipped": 0,
+        "selected_frame_indices": [item["index"] for item in kept]
     })
 
 
@@ -631,42 +553,32 @@ def register_employee(request):
     # ✅ Compute image MD5 hash
     image_md5 = compute_md5(image_file)
 
-    # ✅ Convert image to face encoding
-    encoding, is_real = imagefile_to_encoding(image_file)
-    # if not is_real:
-    #     return JsonResponse({"error": "Spoofing attempt detected. Registration failed."}, status=400)
-
-    if not encoding:
-        return JsonResponse({"error": "No face detected in uploaded image"}, status=400)
-
     try:
-        # ✅ Connect to MongoDB (use your local or cloud URI)
-        mongo_uri = os.getenv("GLOBAL_DB_HOST")
+        # ✅ Connect to MongoDB
         global_db = os.getenv("HR_DB_NAME", "HR")
         client = get_mongo_client()
         db = client[global_db]
         fs = gridfs.GridFS(db)
 
         # ✅ Save image to GridFS
-        image_file.seek(0)  # reset pointer
+        image_file.seek(0)
         gridfs_file_id = fs.put(
             image_file.read(),
             filename=f"{employee_id}_{name}.jpg",
-            content_type=image_file.content_type,
+            content_type=getattr(image_file, 'content_type', 'image/jpeg') or 'image/jpeg',
             employeeId=employee_id,
             md5=image_md5
         )
 
-        # ✅ Save encoding & metadata in Employee model
+        # ✅ Save metadata in Employee model
         emp = save_or_update_encoding(
             employee_id,
-            encoding,
+            None,
             created_by=request.user if request.user.is_authenticated else None,
             name=name,
             image_md5=image_md5
         )
 
-        # ✅ Store reference to GridFS ID in model (if field exists)
         if hasattr(emp, "gridfs_image_id"):
             emp.gridfs_image_id = str(gridfs_file_id)
             emp.save(update_fields=["gridfs_image_id"])
@@ -677,8 +589,8 @@ def register_employee(request):
             "name": emp.name,
             "image_md5": emp.image_md5,
             "gridfs_image_id": str(gridfs_file_id),
-            "current_face_encoding_count": len(emp.current_face_encoding or []),
-            "face_encoding_history_count": len(emp.face_encoding_data_history or [])
+            "current_face_encoding_count": 0,
+            "face_encoding_history_count": 0
         })
 
     except Exception as e:
@@ -688,57 +600,14 @@ def register_employee(request):
 @api_view(['POST'])
 @permission_classes([HasRoleAndDataPermission])
 def encode_employee_face(request, employee_id):
-    try:
-        mongo_uri = os.getenv("GLOBAL_DB_HOST")
-        global_db = os.getenv("GLOBAL_DB_NAME", "Global")
-        client = get_mongo_client()
-        global_profiles = client[global_db]['backend_diagnostics_profile']
-
-        emp = global_profiles.find_one({"employeeId": employee_id})
-        if not emp:
-            return JsonResponse({"error": f"Employee {employee_id} not found"}, status=404)
-
-        profile_img_id = emp.get("profileImage")
-        name = emp.get("employeeName", "")
-        if not profile_img_id:
-            return JsonResponse({"error": "Profile image missing"}, status=400)
-
-        base_url = request.build_absolute_uri('/')[:-1]
-        image_url = f"{base_url}/serve-file/{profile_img_id}/"
-        resp = requests.get(image_url, timeout=10)
-        resp.raise_for_status()
-
-        img_bytes = BytesIO(resp.content)
-        
-        # ✅ Compute MD5 for fetched image
-        image_md5 = hashlib.md5(resp.content).hexdigest()
-
-        encoding, is_real = imagefile_to_encoding(img_bytes)
-        if not is_real:
-            return JsonResponse({"error": "Spoofing attempt detected. Encoding failed."}, status=400)
-
-        if not encoding:
-            return JsonResponse({"error": "No face detected in image"}, status=422)
-
-        emp_obj = save_or_update_encoding(
-            employee_id,
-            encoding,
-            created_by=request.user if request.user.is_authenticated else None,
-            name=name,
-            image_md5=image_md5
-        )
-
-        return JsonResponse({
-            "success": True,
-            "employee_id": emp_obj.employee_id,
-            "name": emp_obj.name,
-            "image_md5": emp_obj.image_md5,
-            "is_active": emp_obj.is_active,
-            "current_face_encoding": emp_obj.current_face_encoding
-        })
-
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+    """
+    Deprecated: Face recognition is removed.
+    """
+    return JsonResponse({
+        "success": True,
+        "employee_id": employee_id,
+        "message": "Face recognition is disabled."
+    })
 
 
 @api_view(['GET'])

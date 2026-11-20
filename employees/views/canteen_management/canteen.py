@@ -9,13 +9,6 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from employees.models import Employee, CanteenItem, CanteenQuotaRule, CanteenTokenIssue, SpoofingAttempt
-from employees.face_utils import (
-    base64_to_encoding,
-    SpoofingDetectedError,
-    match_face_1_to_n
-)
-from employees.views.attendance_management.attendance import get_optimized_encodings
-
 from employees.decorators import token_required
 
 IST = pytz.timezone('Asia/Kolkata')
@@ -24,79 +17,24 @@ IST = pytz.timezone('Asia/Kolkata')
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def issue_canteen_token(request):
-
     """
-    Scans employee face, verifies identity & anti-spoofing, checks daily quota (1 token per employee per day),
-    and issues a Canteen Tea Token.
+    Issues a Canteen Tea Token based on employee_id, checking daily quota (1 token per employee per day).
     """
     try:
         data = request.data
-        image_b64 = data.get('image') or data.get('image_b64')
+        employee_id = data.get('employee_id')
         device_id = data.get('device_id', 'CANTEEN_KIOSK_1')
         item_name = data.get('item_name', 'Tea')
 
-        if not image_b64:
+        if not employee_id:
             return Response({
                 'status': 'error',
-                'message': 'Image is required for face recognition'
+                'message': 'employee_id is required to issue token'
             }, status=400)
 
-        # 1. Extract face encoding & check liveness (anti-spoofing)
-        try:
-            res = base64_to_encoding(image_b64)
-            if isinstance(res, tuple):
-                face_encoding, is_real = res
-            else:
-                face_encoding, is_real = res, True
-        except SpoofingDetectedError:
-            # Log spoofing attempt
-            SpoofingAttempt.objects.create(
-                image=image_b64[:200],
-                device_id=device_id,
-                category="SPFM_CANTEEN"
-            )
-            return Response({
-                'status': 'error',
-                'error_code': 'SPOOF_DETECTED',
-                'message': 'Fake face or photo detected! Real face required.'
-            }, status=400)
-        except Exception as e:
-            return Response({
-                'status': 'error',
-                'error_code': 'NO_FACE',
-                'message': str(e) or 'No clear face detected in the image.'
-            }, status=400)
-
-        if not face_encoding:
-            return Response({
-                'status': 'error',
-                'error_code': 'NO_FACE',
-                'message': 'No face detected in the frame.'
-            }, status=400)
-
-
-        # 2. Match 1:N against active employees
-        matrix, employees_meta = get_optimized_encodings()
-
-        if len(employees_meta) == 0:
-            return Response({
-                'status': 'error',
-                'error_code': 'NO_BIOMETRICS',
-                'message': 'No active registered employee faces in database.'
-            }, status=404)
-
-        match, distance, err_reason = match_face_1_to_n(face_encoding, matrix, employees_meta, threshold=0.45)
-
-        if err_reason or not match:
-            return Response({
-                'status': 'error',
-                'error_code': 'FACE_NOT_MATCHED',
-                'message': err_reason or 'Face not recognized. Please register biometrics or scan again.'
-            }, status=404)
-
-
-        matched_employee_id = match['employee_id']
-        matched_employee_name = match['name']
+        emp_obj = Employee.objects.filter(employee_id=employee_id).first()
+        matched_employee_id = str(employee_id)
+        matched_employee_name = emp_obj.name if emp_obj else f"Employee {employee_id}"
 
         dept_name = 'General'
         try:

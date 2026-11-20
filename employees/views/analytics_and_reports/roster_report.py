@@ -50,11 +50,9 @@ def export_roster_csv(request):
 
         query = dept_ctx['mongo_query']
         
-        # Fetch only employees with face registered from SQL (excluding inactive)
-        from employees.models import Employee
+        # Fetch active employees
         from employees.views.common.utils import get_inactive_employee_ids
         inactive_ids = get_inactive_employee_ids()
-        face_registered_ids = {str(eid) for eid in Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True) if str(eid) not in inactive_ids}
 
         profiles = list(profiles_col.find(query))
 
@@ -62,8 +60,8 @@ def export_roster_csv(request):
         for p in profiles:
             emp_id = str(p.get("employeeId"))
             
-            # Skip if inactive or not face registered
-            if emp_id in inactive_ids or emp_id not in face_registered_ids:
+            # Skip if inactive
+            if emp_id in inactive_ids:
                 continue
 
             dept_code = p.get("department") # This is the ID/Code
@@ -172,20 +170,15 @@ def export_roster_xlsx(request):
         dept_lookup = {d.get('department_code'): d.get('department_name') for d in departments_col.find()}
         query = dept_ctx['mongo_query']
         
-        # Fetch only employees with face registered from SQL
-        from employees.models import Employee
-        face_registered_ids = set(Employee.objects.filter(current_face_encoding__isnull=False).values_list('employee_id', flat=True))
-
         profiles = list(profiles_col.find(query))
         employees_data = []
         for p in profiles:
             eid = str(p.get("employeeId"))
-            if eid in face_registered_ids:
-                employees_data.append({
-                    "id": eid, 
-                    "name": p.get("employeeName"), 
-                    "department": dept_lookup.get(p.get("department"), p.get("department")) or "Unassigned"
-                })
+            employees_data.append({
+                "id": eid, 
+                "name": p.get("employeeName"), 
+                "department": dept_lookup.get(p.get("department"), p.get("department")) or "Unassigned"
+            })
         employees_data.sort(key=lambda x: (x['department'], x['name']))
     except Exception as e:
         return HttpResponse(f"Error fetching data: {str(e)}", status=500)

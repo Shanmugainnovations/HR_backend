@@ -19,6 +19,11 @@ from .views.mobile_app.notifications import (
     toggle_attendance_push
 )
 
+from .views.mobile_app.config import (
+    get_mobile_config,
+    manage_mobile_settings
+)
+
 
 
 
@@ -189,6 +194,10 @@ urlpatterns = [
     path('mobile/permissions/my-requests/', views.get_my_permission_requests, name='mobile-my-permissions'),
     path('mobile/permissions/pending/', views.get_pending_permission_requests, name='mobile-pending-permissions'),
     path('mobile/permissions/review/', views.review_permission_request, name='mobile-review-permission'),
+
+    # Mobile App Remote Configuration & Admin Settings
+    path('mobile/config/', get_mobile_config, name='mobile-config'),
+    path('admin/mobile-settings/', manage_mobile_settings, name='admin-mobile-settings'),
 ]
 
 

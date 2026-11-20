@@ -150,13 +150,42 @@ def apply_leave(request):
             # If no Incharge allocated for this department -> Routes directly to Level 2 (Pending HOD)
             initial_status = 'Pending Incharge' if has_incharge else 'Pending HOD'
 
+        start_str = request.data.get('start_date')
+        end_str = request.data.get('end_date')
+
+        # Validate past / future date policy from mobile config
+        try:
+            from employees.views.mobile_app.config import get_active_mobile_config
+            cfg = get_active_mobile_config()
+            
+            if start_str:
+                from datetime import datetime, date
+                if isinstance(start_str, str):
+                    start_d = datetime.strptime(start_str[:10], '%Y-%m-%d').date()
+                elif isinstance(start_str, (datetime, date)):
+                    start_d = start_str if isinstance(start_str, date) else start_str.date()
+                else:
+                    start_d = None
+
+                if start_d:
+                    today_d = date.today()
+                    if start_d < today_d:
+                        if not cfg.get('allow_past_date_leaves', True):
+                            return Response({"error": "Backdated leave requests are currently disabled by policy."}, status=400)
+                        max_past = int(cfg.get('max_past_leave_days', 7) or 7)
+                        days_diff = (today_d - start_d).days
+                        if days_diff > max_past:
+                            return Response({"error": f"Cannot apply for leave more than {max_past} days in the past (requested date was {days_diff} days ago)."}, status=400)
+        except Exception as date_val_err:
+            print("Date policy validation notice:", date_val_err)
+
         LeaveRequest.objects.create(
             employee_id=employee_id,
             employee_name=emp_name,
             department=dept_name,
             department_id=raw_dept_id or raw_dept or dept_name,
-            start_date=request.data.get('start_date'),
-            end_date=request.data.get('end_date'),
+            start_date=start_str,
+            end_date=end_str,
             leave_type=request.data.get('leave_type'),
             reason=request.data.get('reason'),
             status=initial_status
