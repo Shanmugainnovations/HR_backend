@@ -108,11 +108,14 @@ def send_expo_push_notification(employee_ids, title, body, data=None):
         for token in valid_expo_tokens:
             messages.append({
                 "to": token,
-                "sound": "default",
                 "title": title,
                 "body": body,
-                "data": data or {},
-                "badge": 1
+                "sound": "default",
+                "priority": "high",
+                "channelId": "default",
+                "_displayInForeground": True,
+                "badge": 1,
+                "data": data or {}
             })
 
         response = requests.post(
@@ -125,7 +128,7 @@ def send_expo_push_notification(employee_ids, title, body, data=None):
             },
             timeout=8
         )
-        print(f"Expo push notification sent to {len(valid_expo_tokens)} token(s). Status: {response.status_code}")
+        print(f"Expo push notification sent to {len(valid_expo_tokens)} token(s). Status: {response.status_code}, Resp: {response.text}")
     except Exception as err:
         print("Error sending Expo push notification:", err)
 

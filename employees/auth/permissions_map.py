@@ -1,24 +1,6 @@
 PAGE_MAPPING = {
     # =============================================================
-    # 1. CORE HARDWARE & FACIAL RECOGNITION (Device / Kiosk)
-    # =============================================================
-    '/_b_a_c_k_e_n_d/HRA/mark/.*': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/mark/': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/verify-face/.*': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/verify-face/': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/preview-face-frames/.*': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/preview-face-frames/': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/employees/[^/]+/encode_face/.*': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/employees/[^/]+/encode_face/': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/employees/[^/]+/enable_face/.*': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/employees/[^/]+/enable_face/': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/employees/[^/]+/disable_face/.*': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/employees/[^/]+/disable_face/': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/employees/md5/.*': 'FR-API-FR',
-    '/_b_a_c_k_e_n_d/HRA/employees/image-by-md5/.*': 'FR-API-FR',
-
-    # =============================================================
-    # 2. CANTEEN TOKEN & RULES
+    # 1. CANTEEN TOKEN & RULES
     # =============================================================
     '/_b_a_c_k_e_n_d/HRA/canteen/issue-token/.*': 'CN-API-CT',
     '/_b_a_c_k_e_n_d/HRA/canteen/issue-token/': 'CN-API-CT',
@@ -49,8 +31,8 @@ PAGE_MAPPING = {
     # Approvals (HOD, AVP, Admin)
     '/_b_a_c_k_e_n_d/HRA/leaves/pending/.*': 'HR-P-LEV-APR',
     '/_b_a_c_k_e_n_d/HRA/leaves/pending/': 'HR-P-LEV-APR',
-    '/_b_a_c_k_e_n_d/HRA/leaves/[0-9]+/status/.*': 'HR-P-LEV-APR',
-    '/_b_a_c_k_e_n_d/HRA/leaves/[0-9]+/status/': 'HR-P-LEV-APR',
+    '/_b_a_c_k_e_n_d/HRA/leaves/[^/]+/status/.*': 'HR-P-LEV-APR',
+    '/_b_a_c_k_e_n_d/HRA/leaves/[^/]+/status/': 'HR-P-LEV-APR',
     '/_b_a_c_k_e_n_d/HRA/leaves/history/.*': 'HR-P-LEV-APR',
     '/_b_a_c_k_e_n_d/HRA/leaves/history/': 'HR-P-LEV-APR',
 
@@ -166,10 +148,10 @@ PAGE_MAPPING = {
     '/_b_a_c_k_e_n_d/HRA/employee/notifications/': 'GL-P-EP',
     '/_b_a_c_k_e_n_d/HRA/register-push-token/.*': 'GL-P-EP',
     '/_b_a_c_k_e_n_d/HRA/register-push-token/': 'GL-P-EP',
-    '/_b_a_c_k_e_n_d/HRA/admin/send-notification/.*': 'GL-P-BD',
-    '/_b_a_c_k_e_n_d/HRA/admin/send-notification/': 'GL-P-BD',
-    '/_b_a_c_k_e_n_d/HRA/attendance-push/.*': 'GL-P-BD',
-    '/_b_a_c_k_e_n_d/HRA/attendance-push/': 'GL-P-BD',
+    '/_b_a_c_k_e_n_d/HRA/admin/send-notification/.*': 'GL-P-EAD',
+    '/_b_a_c_k_e_n_d/HRA/admin/send-notification/': 'GL-P-EAD',
+    '/_b_a_c_k_e_n_d/HRA/attendance-push/.*': 'GL-P-EAD',
+    '/_b_a_c_k_e_n_d/HRA/attendance-push/': 'GL-P-EAD',
 
     # =============================================================
     # 9. HELPDESK & SUPPORT TICKETS
@@ -214,6 +196,8 @@ PAGE_MAPPING = {
     '/_b_a_c_k_e_n_d/HRA/approver-hierarchy/': 'GL-P-BD',
     '/_b_a_c_k_e_n_d/HR/approver-hierarchy/.*': 'GL-P-BD',
     '/_b_a_c_k_e_n_d/HR/approver-hierarchy/': 'GL-P-BD',
+    '/_b_a_c_k_e_n_d/HRA/admin/mobile-settings/.*': 'GL-P-EAD',
+    '/_b_a_c_k_e_n_d/HRA/admin/mobile-settings/': 'GL-P-EAD',
 
     # =============================================================
     # 11. EMPLOYEE DIRECTORY & PROFILES (Existing Global Codes)

@@ -13,7 +13,6 @@ cffi==1.17.1
 charset-normalizer==3.4.1
 click==8.3.1
 cryptography==43.0.3
-deepface==0.0.96
 Django==3.2
 django-cors-headers==3.13.0
 django-sslserver==0.22
@@ -39,7 +38,6 @@ idna==3.10
 itsdangerous==2.2.0
 Jinja2==3.1.6
 joblib==1.5.3
-keras==3.13.0
 libclang==18.1.1
 lightecc==0.0.4
 lightphe==0.0.20
@@ -64,7 +62,6 @@ pandas==2.2.3
 pillow==11.2.1
 propcache==0.3.0
 protobuf==6.33.2
-psycopg2-binary==2.9.10
 pyauth @ git+https://github.com/ashokkumarta/pyauth.git@9b57fee6e8425bf291b3e9f6d4b4d16ad16fa83a
 pycparser==2.22
 pygame==2.6.1
@@ -79,19 +76,12 @@ pytz==2024.1
 qrcode==8.1
 requests==2.32.3
 rest-framework-simplejwt==0.0.2
-retina-face==0.0.17
 rich==14.2.0
 six==1.17.0
 soupsieve==2.8
 sqlparse==0.2.4
 sympy==1.14.0
-tensorboard==2.20.0
-tensorboard-data-server==0.7.2
-tensorflow==2.20.0
 termcolor==3.2.0
-tf_keras==2.20.1
-torch==2.9.1
-torchvision==0.24.1
 tqdm==4.67.1
 twilio==9.5.0
 typing_extensions==4.12.2
@@ -101,5 +91,4 @@ Werkzeug==3.1.4
 wrapt==2.0.1
 yarl==1.17.0
 openpyxl==3.1.5
-insightface==1.0.1
 onnxruntime==1.27.0
