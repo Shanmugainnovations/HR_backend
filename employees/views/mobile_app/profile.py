@@ -146,6 +146,15 @@ def get_full_employee_profile(request):
         profile_img_id = profile_data.get('profileImage') or profile_data.get('profile_image') or profile_data.get('image_id')
         photo_url = f"/_b_a_c_k_e_n_d/HR/employee-profile-photo/{emp_str}/" if profile_img_id else ""
 
+        # Check if user has set a custom password
+        is_password_set = False
+        user_query = {'$or': [{'employeeId': emp_str}, {'employee_id': emp_str}]}
+        if emp_str.isdigit():
+            user_query['$or'].extend([{'employeeId': int(emp_str)}, {'employee_id': int(emp_str)}])
+        user_doc = global_db['backend_diagnostics_user'].find_one(user_query)
+        if user_doc:
+            is_password_set = bool(user_doc.get('is_password_set', False))
+
         # Assigned shift lookup
         assigned_shift = "Not Assigned"
         try:
@@ -224,6 +233,7 @@ def get_full_employee_profile(request):
             "profile_image_id": str(profile_img_id) if profile_img_id else "",
             "photo_url": photo_url,
             "employment_status": (profile_data.get('employmentStatus') or 'Full-Time').capitalize(),
+            "is_password_set": is_password_set,
         }
 
         return Response({"success": True, "profile": enriched_profile}, status=status.HTTP_200_OK)
@@ -340,15 +350,17 @@ def change_employee_password(request):
     old_password = request.data.get('old_password') or request.data.get('current_password')
     new_password = request.data.get('new_password')
     confirm_password = request.data.get('confirm_password')
+    is_first_time = bool(request.data.get('is_first_time') or request.data.get('is_set_mode'))
+    reset_mode = bool(request.data.get('reset_mode') or request.data.get('reset_without_old_password'))
 
     if not emp_id:
         return Response({"error": "Employee ID is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    if not old_password or not new_password:
-        return Response({"error": "Both current password and new password are required"}, status=status.HTTP_400_BAD_REQUEST)
+    if not new_password:
+        return Response({"error": "New password is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    if len(new_password) < 4:
-        return Response({"error": "New password must be at least 4 characters long"}, status=status.HTTP_400_BAD_REQUEST)
+    if len(new_password) < 6:
+        return Response({"error": "New password must be at least 6 characters long"}, status=status.HTTP_400_BAD_REQUEST)
 
     if confirm_password and new_password != confirm_password:
         return Response({"error": "New password and Confirm password do not match"}, status=status.HTTP_400_BAD_REQUEST)
@@ -369,22 +381,45 @@ def change_employee_password(request):
 
         user_doc = user_col.find_one(query)
         if not user_doc:
-            return Response({"error": "User account not found for this employee"}, status=status.HTTP_404_NOT_FOUND)
+            # Check if profile exists and create user doc if missing
+            prof_doc = global_db['backend_diagnostics_profile'].find_one(query)
+            if not prof_doc:
+                return Response({"error": "User account or employee profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            user_doc = {
+                'employeeId': emp_str,
+                'employee_id': emp_str,
+                'name': prof_doc.get('employeeName') or prof_doc.get('name') or emp_str,
+                'role': prof_doc.get('primaryRole') or 'Employee',
+                'is_password_set': False,
+                'is_active': True,
+                'created_date': datetime.now()
+            }
+            res_ins = user_col.insert_one(user_doc)
+            user_doc['_id'] = res_ins.inserted_id
 
-        # Verify old password
-        stored_hash = user_doc.get('password', '')
-        is_valid = False
-        try:
-            if stored_hash.startswith('pbkdf2_') or stored_hash.startswith('bcrypt') or '$' in stored_hash:
-                is_valid = check_password(old_password, stored_hash)
-            else:
+        # Determine if old password verification is required:
+        # Bypassing old password is ONLY allowed for first-time setup when password was not previously set!
+        # Once a password is set, changing it strictly requires the current password.
+        has_password_set = bool(user_doc.get('is_password_set', False)) and bool(user_doc.get('password'))
+
+        if has_password_set:
+            if not old_password:
+                return Response({"error": "Current password is required to change password"}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Verify old password
+            stored_hash = user_doc.get('password', '')
+            is_valid = False
+            try:
+                if stored_hash.startswith('pbkdf2_') or stored_hash.startswith('bcrypt') or '$' in stored_hash:
+                    is_valid = check_password(old_password, stored_hash)
+                else:
+                    is_valid = (old_password == stored_hash)
+            except Exception as e:
+                logger.warning(f"Error checking password hash: {e}")
                 is_valid = (old_password == stored_hash)
-        except Exception as e:
-            logger.warning(f"Error checking password hash: {e}")
-            is_valid = (old_password == stored_hash)
 
-        if not is_valid:
-            return Response({"error": "Current password is incorrect. Please verify and try again."}, status=status.HTTP_400_BAD_REQUEST)
+            if not is_valid:
+                return Response({"error": "Current password is incorrect. Please verify and try again."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Hash new password
         hashed_pw = make_password(new_password)
@@ -409,14 +444,30 @@ def change_employee_password(request):
             hr_db = client[hr_db_name]
             hr_db['employees_user'].update_many(
                 {'$or': [{'employeeId': emp_str}, {'employee_id': emp_str}]},
-                {'$set': {'password': hashed_pw, 'is_password_set': True}}
+                {'$set': {'password': hashed_pw, 'is_password_set': True, 'updated_at': now_dt}}
             )
-        except Exception:
-            pass
+            # Sync to HR employees_register
+            hr_db['employees_register'].update_many(
+                {'$or': [{'employee_id': emp_str}, {'employeeId': emp_str}]},
+                {'$set': {'password': hashed_pw, 'confirmPassword': hashed_pw, 'is_active': True}}
+            )
+        except Exception as sync_err:
+            logger.warning(f"Error syncing password to HR database: {sync_err}")
+
+        # Also sync to SQL Register model if available
+        try:
+            from employees.models import Register
+            Register.objects.filter(employee_id=emp_str).update(
+                password=hashed_pw,
+                confirmPassword=hashed_pw
+            )
+        except Exception as sql_err:
+            logger.warning(f"Error syncing password to SQL Register model: {sql_err}")
 
         return Response({
             "success": True,
-            "message": "Password changed successfully! Please use your new password for future logins."
+            "message": "Password updated successfully! Please use your new password for future logins.",
+            "is_password_set": True
         }, status=status.HTTP_200_OK)
 
     except Exception as e:

@@ -8,8 +8,13 @@ def generate_employee_token(employee_id, role='Employee', exp_days=30):
     """
     now = datetime.datetime.utcnow()
     payload = {
+        "iss": "https://lab.shinova.in/",
+        "aud": str(employee_id),
+        "sub": str(employee_id),
         "employee_id": str(employee_id),
         "role": str(role),
+        "allowed-data": ["SHB001"],
+        "allowed-actions": ["GL-P-EP", "GL-P-EL", "HR-R-STAFF"],
         "iat": now,
         "exp": now + datetime.timedelta(days=exp_days)
     }

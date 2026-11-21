@@ -254,11 +254,14 @@ def get_cached_reference_maps(force_refresh=False):
     if client:
         try:
             db = client[db_name]
-            for d in db['backend_diagnostics_Departments'].find({}, {'_id': 0, 'department_code': 1, 'department_name': 1}):
+            for d in db['backend_diagnostics_Departments'].find({}, {'_id': 0, 'department_id': 1, 'department_code': 1, 'department_name': 1}):
                 c = d.get('department_code')
                 n = d.get('department_name')
+                i = d.get('department_id')
                 if c and n:
                     dept_map[c] = n
+                if i is not None and n:
+                    dept_map[str(i)] = n
             for dg in db['backend_diagnostics_Designation'].find({'is_active': True}, {'_id': 0, 'Designation_code': 1, 'designation': 1}):
                 c = dg.get('Designation_code')
                 n = dg.get('designation')
