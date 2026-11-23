@@ -84,6 +84,28 @@ def apply_leave(request):
         )
         leave.save_with_audit(request)
 
+        # Create in-app and remote push notification for the employee
+        try:
+            from .notifications import get_notifications_collection, send_expo_push_notification
+            col = get_notifications_collection()
+            now_dt = datetime.datetime.now()
+            notif_title = "Leave Request Submitted 📋"
+            start_str = leave.start_date.strftime('%d %b %Y') if hasattr(leave.start_date, 'strftime') else str(leave.start_date)
+            end_str = leave.end_date.strftime('%d %b %Y') if hasattr(leave.end_date, 'strftime') else str(leave.end_date)
+            notif_msg = f"Your request for {leave_type_str} ({start_str} to {end_str}) has been submitted for review."
+            col.insert_one({
+                "employee_id": str(employee_id),
+                "title": notif_title,
+                "message": notif_msg,
+                "category": "leave",
+                "is_read": False,
+                "action_url": "",
+                "created_at": now_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                "created_at_ts": now_dt.timestamp()
+            })
+            send_expo_push_notification(employee_id, notif_title, notif_msg, {"category": "leave", "leave_id": leave.id})
+        except Exception as notif_err:
+            print("[Leave] Error creating leave application notification:", notif_err)
 
         return Response({
             "message": "Leave request submitted successfully",

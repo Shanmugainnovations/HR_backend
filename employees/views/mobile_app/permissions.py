@@ -218,13 +218,24 @@ def submit_permission_request(request):
 
         requests_col.insert_one(doc)
 
-        # Create in-app notification for the employee
+        # Create in-app and remote push notification for the employee
+        notif_sub_title = "Permission Request Submitted ⏱️"
+        notif_sub_msg = f"Your 1-hour permission request for {date_str} ({session}) has been submitted for {target_reviewer} review."
         create_in_app_notification(
             employee_id=employee_id,
-            title="Permission Request Submitted ⏱️",
-            message=f"Your 1-hour permission request for {date_str} ({session}) has been submitted for {target_reviewer} review.",
+            title=notif_sub_title,
+            message=notif_sub_msg,
             category="permission"
         )
+        try:
+            send_expo_push_notification(
+                employee_ids=[employee_id],
+                title=notif_sub_title,
+                body=notif_sub_msg,
+                data={"category": "permission", "request_id": req_id}
+            )
+        except Exception as push_err:
+            print("[Permission] Error sending submit push:", push_err)
 
         return Response({
             "message": f"Permission request submitted successfully for {target_reviewer} review.",

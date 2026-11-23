@@ -118,17 +118,25 @@ def send_expo_push_notification(employee_ids, title, body, data=None):
                 "data": data or {}
             })
 
-        response = requests.post(
-            "https://exp.host/--/api/v2/push/send",
-            json=messages,
-            headers={
-                "Accept": "application/json",
-                "Accept-Encoding": "gzip, deflate",
-                "Content-Type": "application/json",
-            },
-            timeout=8
-        )
-        print(f"Expo push notification sent to {len(valid_expo_tokens)} token(s). Status: {response.status_code}, Resp: {response.text}")
+        # Expo accepts at most 100 messages per request
+        def _chunk_messages(lst, chunk_size=100):
+            for i in range(0, len(lst), chunk_size):
+                yield lst[i:i + chunk_size]
+
+        total_sent = 0
+        for chunk in _chunk_messages(messages, 100):
+            response = requests.post(
+                "https://exp.host/--/api/v2/push/send",
+                json=chunk,
+                headers={
+                    "Accept": "application/json",
+                    "Accept-Encoding": "gzip, deflate",
+                    "Content-Type": "application/json",
+                },
+                timeout=10
+            )
+            total_sent += len(chunk)
+            print(f"[ExpoPush] Dispatched chunk ({len(chunk)} tokens, cumulative: {total_sent}/{len(messages)}). Status: {response.status_code}")
     except Exception as err:
         print("Error sending Expo push notification:", err)
 
