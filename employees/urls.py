@@ -155,9 +155,10 @@ urlpatterns = [
     path('employee-profile-photo/<str:employee_id>/', views.serve_employee_profile_photo, name='employee-profile-photo'),
     path('change-password/', views.change_employee_password, name='change-employee-password'),
 
-    # Mobile Self-Activation / Account Setup
+    # Mobile Self-Activation / Account Setup & Reset
     path('mobile-employee-check/', views.mobile_employee_check, name='mobile-employee-check'),
     path('mobile-create-login/', views.mobile_create_login, name='mobile-create-login'),
+    path('mobile-reset-password/', views.mobile_reset_password, name='mobile-reset-password'),
 
     # Attendance 2-Tier Approvals (HOD -> Admin -> Gated Payroll)
     path('attendance/approval-summary/', views.get_attendance_approval_summary, name='attendance-approval-summary'),

@@ -40,6 +40,7 @@ from .authentication.auth import (
     get_user_profile,
     mobile_employee_check,
     mobile_create_login,
+    mobile_reset_password,
 )
 from .global_management import (
     get_data_entitlements,

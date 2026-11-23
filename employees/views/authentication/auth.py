@@ -44,26 +44,16 @@ def resolve_department_names(dept_str):
     if not dept_str or dept_str == "Unassigned":
         return "Unassigned"
     
-    parts = [p.strip() for p in dept_str.split(',') if p.strip()]
+    parts = [p.strip() for p in str(dept_str).split(',') if p.strip()]
     if not parts:
-         return "Unassigned"
+        return "Unassigned"
     
     try:
-        mongo_uri = os.getenv("GLOBAL_DB_HOST")
-        db_name = os.getenv("GLOBAL_DB_NAME", "Global")
-        client = MongoClient(mongo_uri)
-        db = client[db_name]
-        
-        results = []
-        for p in parts:
-            query = {"department_id": int(p)} if p.isdigit() else {"department_code": p}
-            dept = db['backend_diagnostics_Departments'].find_one(query)
-            if dept:
-                results.append(dept.get('department_name', p))
-            else:
-                results.append(p)
+        from employees.views.common.utils import get_cached_reference_maps
+        dept_map, _, _ = get_cached_reference_maps()
+        results = [dept_map.get(p, p) for p in parts]
         return ",".join(results)
-    except:
+    except Exception:
         return dept_str
 
 from rest_framework.decorators import api_view
@@ -850,11 +840,24 @@ def mobile_employee_check(request):
         user_doc = global_db['backend_diagnostics_user'].find_one(query_emp)
         reg_user = hr_db['employees_register'].find_one(query_emp)
 
+        is_password_set = bool(user_doc.get('is_password_set', False)) if user_doc else False
         has_login = False
-        if user_doc and (user_doc.get('password') or user_doc.get('is_password_set')):
+        if user_doc and user_doc.get('password') and is_password_set:
             has_login = True
-        elif reg_user and reg_user.get('password'):
+        elif reg_user and reg_user.get('password') and is_password_set:
             has_login = True
+
+        dob_val = ""
+        if profile_doc:
+            raw_dob = profile_doc.get('dateOfBirth') or profile_doc.get('date_of_birth')
+            if raw_dob:
+                dob_val = str(raw_dob).split(' ')[0]
+        elif in_sql_attendance:
+            sql_emp = Employee.objects.filter(employee_id=emp_str).first()
+            if sql_emp and hasattr(sql_emp, 'date_of_birth') and sql_emp.date_of_birth:
+                dob_val = str(sql_emp.date_of_birth)
+
+        has_dob = bool(dob_val)
 
         return Response({
             "employeeId": emp_str,
@@ -863,8 +866,11 @@ def mobile_employee_check(request):
             "designation": desig_name,
             "registered_in_attendance": True,
             "has_login": has_login,
-            "can_create_login": not has_login,
-            "message": "Account already active. Please sign in." if has_login else "Employee verified. You can now create your password."
+            "is_password_set": is_password_set,
+            "can_create_login": not is_password_set,
+            "can_reset_password": True,
+            "has_dob": has_dob,
+            "message": "Account verified. You can sign in or reset your password." if is_password_set else "Employee verified. You can now set your password."
         }, status=status.HTTP_200_OK)
 
     except Exception as e:
@@ -891,8 +897,8 @@ def mobile_create_login(request):
         if not emp_id or not password:
             return Response({"error": "Employee ID and Password are required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        if len(str(password)) < 4:
-            return Response({"error": "Password must be at least 4 characters long"}, status=status.HTTP_400_BAD_REQUEST)
+        if len(str(password)) < 6:
+            return Response({"error": "Password must be at least 6 characters long"}, status=status.HTTP_400_BAD_REQUEST)
 
         if confirm_password and str(password) != str(confirm_password):
             return Response({"error": "Password and Confirm Password do not match"}, status=status.HTTP_400_BAD_REQUEST)
@@ -1022,6 +1028,222 @@ def mobile_create_login(request):
         }, status=status.HTTP_201_CREATED)
 
     except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _normalize_dob_str(d_str):
+    """Normalize Date of Birth strings to YYYY-MM-DD for comparison."""
+    if not d_str:
+        return ""
+    d_str = str(d_str).strip()
+    if ' ' in d_str:
+        d_str = d_str.split(' ')[0]
+    if 'T' in d_str:
+        d_str = d_str.split('T')[0]
+    d_str = d_str.replace('/', '-').replace('.', '-')
+    parts = d_str.split('-')
+    if len(parts) == 3:
+        if len(parts[0]) == 4:
+            return f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
+        elif len(parts[2]) == 4:
+            return f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+    return d_str
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def mobile_reset_password(request):
+    """
+    Allows an employee to reset their password or set it for the first time
+    when old password is unknown.
+    Optionally verifies Date of Birth if registered in the system.
+    Updates MongoDB backend_diagnostics_user and HR employees_register,
+    and returns a valid JWT access token for immediate mobile login.
+    """
+    from django.contrib.auth.hashers import make_password
+    from employees.token_utils import generate_employee_token
+    from employees.models import Employee, Register
+    from django.utils import timezone
+
+    try:
+        emp_id = request.data.get('employeeId') or request.data.get('employee_id')
+        new_password = request.data.get('password') or request.data.get('new_password')
+        confirm_password = request.data.get('confirmPassword') or request.data.get('confirm_password')
+        input_dob = request.data.get('dateOfBirth') or request.data.get('dob')
+
+        if not emp_id or not new_password:
+            return Response({"error": "Employee ID and new password are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if len(str(new_password)) < 6:
+            return Response({"error": "Password must be at least 6 characters long"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if confirm_password and str(new_password) != str(confirm_password):
+            return Response({"error": "Passwords do not match. Please re-enter."}, status=status.HTTP_400_BAD_REQUEST)
+
+        emp_str = str(emp_id).strip()
+
+        # Connect to MongoDB
+        mongo_uri = os.getenv("GLOBAL_DB_HOST")
+        global_db_name = os.getenv("GLOBAL_DB_NAME", "Global")
+        hr_db_name = os.getenv("HR_DB_NAME", "HR")
+        client = MongoClient(mongo_uri) if mongo_uri else None
+
+        if not client:
+            return Response({"error": "Database connection error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        global_db = client[global_db_name]
+        hr_db = client[hr_db_name]
+
+        # 1. Guard: Verify attendance registration
+        in_sql_attendance = Employee.objects.filter(employee_id=emp_str).exists()
+        query_emp = {'$or': [{'employeeId': emp_str}, {'employee_id': emp_str}]}
+        if emp_str.isdigit():
+            query_emp['$or'].extend([{'employeeId': int(emp_str)}, {'employee_id': int(emp_str)}])
+
+        profile_doc = global_db['backend_diagnostics_profile'].find_one(query_emp)
+
+        if not in_sql_attendance and not profile_doc:
+            return Response({
+                "error": "Employee ID is not registered in the Attendance system. Please contact HR or register at the attendance kiosk first."
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # 2. Check Date of Birth if registered in system
+        profile_dob = ""
+        if profile_doc:
+            raw_dob = profile_doc.get('dateOfBirth') or profile_doc.get('date_of_birth')
+            if raw_dob:
+                profile_dob = str(raw_dob)
+        elif in_sql_attendance:
+            sql_emp = Employee.objects.filter(employee_id=emp_str).first()
+            if sql_emp and hasattr(sql_emp, 'date_of_birth') and sql_emp.date_of_birth:
+                profile_dob = str(sql_emp.date_of_birth)
+
+        # If profile has a registered DOB and input_dob was provided, verify it
+        if profile_dob and input_dob:
+            norm_profile_dob = _normalize_dob_str(profile_dob)
+            norm_input_dob = _normalize_dob_str(input_dob)
+            if norm_profile_dob != norm_input_dob:
+                return Response({
+                    "error": "Date of Birth does not match employee records. Please verify and try again."
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Resolve employee name, role, department
+        emp_name = emp_str
+        dept_id = ""
+        dept_name = ""
+        role = "Employee"
+
+        if profile_doc:
+            emp_name = profile_doc.get('employeeName') or profile_doc.get('name') or emp_str
+            dept_id = str(profile_doc.get('department') or '')
+            role = profile_doc.get('primaryRole') or "Employee"
+            if dept_id:
+                dept_doc = global_db['backend_diagnostics_Departments'].find_one({
+                    '$or': [{'department_code': dept_id}, {'department_id': int(dept_id) if dept_id.isdigit() else -1}]
+                })
+                dept_name = dept_doc.get('department_name') if dept_doc else dept_id
+        elif in_sql_attendance:
+            sql_emp = Employee.objects.filter(employee_id=emp_str).first()
+            if sql_emp:
+                emp_name = sql_emp.name
+                if hasattr(sql_emp, 'department') and sql_emp.department:
+                    dept_name = sql_emp.department.name
+                    dept_id = str(sql_emp.department.id)
+
+        # Hash new password
+        hashed_password = make_password(str(new_password))
+        now_dt = timezone.now()
+
+        # Update in MongoDB Global user collection
+        user_col = global_db['backend_diagnostics_user']
+        user_data = {
+            'employee_id': emp_str,
+            'employeeId': emp_str,
+            'name': emp_name,
+            'password': hashed_password,
+            'is_password_set': True,
+            'is_active': True,
+            'role': role,
+            'primaryRole': role,
+            'department': dept_id,
+            'password_updated_at': now_dt,
+            'updated_at': now_dt,
+            'lastmodified_date': now_dt,
+            'lastmodified_by': emp_str
+        }
+
+        user_col.update_one(
+            query_emp,
+            {'$set': user_data},
+            upsert=True
+        )
+
+        # Sync in HR employees_user
+        try:
+            hr_db['employees_user'].update_many(
+                query_emp,
+                {'$set': {'password': hashed_password, 'is_password_set': True, 'updated_at': now_dt}}
+            )
+        except Exception:
+            pass
+
+        # Sync in HR employees_register
+        try:
+            hr_db['employees_register'].update_many(
+                query_emp,
+                {'$set': {
+                    'employee_id': emp_str,
+                    'name': emp_name,
+                    'department': dept_id,
+                    'role': role,
+                    'password': hashed_password,
+                    'confirmPassword': hashed_password,
+                    'is_active': True
+                }},
+                upsert=True
+            )
+        except Exception as reg_err:
+            logger.warning(f"Error syncing employees_register: {reg_err}")
+
+        # Sync in SQL Register model if available
+        try:
+            Register.objects.filter(employee_id=emp_str).update(
+                password=hashed_password,
+                confirmPassword=hashed_password
+            )
+        except Exception as sql_err:
+            logger.warning(f"Error syncing password to SQL Register model in reset: {sql_err}")
+
+        # Generate JWT token and return success
+        token = generate_employee_token(emp_str, role)
+
+        return Response({
+            "message": "Password reset successfully! Welcome to Shanmuga HR.",
+            "success": True,
+            "access_token": token,
+            "token": token,
+            "user": {
+                "name": emp_name,
+                "employeeName": emp_name,
+                "employee_id": emp_str,
+                "employeeId": emp_str,
+                "role": role,
+                "primaryRole": role,
+                "department": dept_id,
+                "department_id": dept_id,
+                "department_name": dept_name,
+                "selected_branch": "SHB001"
+            },
+            "name": emp_name,
+            "employee_id": emp_str,
+            "role": role,
+            "department": dept_id,
+            "department_name": dept_name,
+            "selected_branch": "SHB001"
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Error in mobile_reset_password: {str(e)}")
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

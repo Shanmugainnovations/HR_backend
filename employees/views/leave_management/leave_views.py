@@ -10,7 +10,7 @@ from employees.views.authentication.auth import resolve_department_names
 from django.utils import timezone
 from datetime import datetime, timedelta
 
-def resolve_leave_department(leave_obj, reg_map=None):
+def resolve_leave_department(leave_obj, reg_map=None, dept_map=None):
     raw_dept = getattr(leave_obj, 'department', '') or getattr(leave_obj, 'department_id', '')
     if (not raw_dept or str(raw_dept).strip() == '') and reg_map:
         raw_dept = reg_map.get(str(getattr(leave_obj, 'employee_id', '')).strip(), '')
@@ -18,7 +18,11 @@ def resolve_leave_department(leave_obj, reg_map=None):
     if not raw_dept:
         return "General"
     
-    resolved = resolve_department_names(str(raw_dept))
+    if dept_map is not None:
+        parts = [p.strip() for p in str(raw_dept).split(',') if p.strip()]
+        resolved = ",".join([dept_map.get(p, p) for p in parts])
+    else:
+        resolved = resolve_department_names(str(raw_dept))
     if not resolved or resolved == "Unassigned":
         return str(raw_dept) if not str(raw_dept).upper().startswith("DEPT") else "General"
     return resolved
@@ -83,8 +87,8 @@ def apply_leave(request):
         raw_dept = request.data.get('department') or (reg.department if reg else None)
         raw_dept_id = request.data.get('department_id') or (reg.department if reg else None)
 
-        # Fallback to MongoDB profile if reg is missing or department is missing
-        if not reg or not raw_dept:
+        # Fallback to MongoDB profile if reg is missing, department is missing, or emp_name is missing
+        if not reg or not raw_dept or not emp_name:
             try:
                 from employees.views.common.utils import get_mongo_client
                 client = get_mongo_client()
@@ -95,9 +99,7 @@ def apply_leave(request):
                     )
                     if prof:
                         if not emp_name:
-                            fn = prof.get('firstName') or ''
-                            ln = prof.get('lastName') or ''
-                            emp_name = f"{fn} {ln}".strip() or prof.get('name')
+                            emp_name = prof.get('employeeName') or prof.get('name') or f"{prof.get('firstName', '')} {prof.get('lastName', '')}".strip()
                         if not raw_dept:
                             raw_dept = prof.get('department')
                         if not raw_dept_id:
@@ -195,6 +197,8 @@ def apply_leave(request):
             "status": initial_status
         }, status=201)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response({"error": str(e)}, status=500)
 
 @api_view(['GET'])
@@ -229,6 +233,8 @@ def my_leaves(request):
         } for l in leaves]
         return Response(data, status=200)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response({"error": str(e)}, status=500)
 
 @api_view(['GET'])
@@ -242,7 +248,7 @@ def pending_leaves(request):
         department = request.GET.get('department')
         status_filter = request.GET.get('status')
         
-        leaves = LeaveRequest.objects.all().order_by('-applied_on')
+        leaves = list(LeaveRequest.objects.all().order_by('-applied_on'))
 
         ctx = get_request_user_approval_context(request)
         is_avp = ctx['is_avp']
@@ -255,80 +261,77 @@ def pending_leaves(request):
         if is_avp:
             # 1. AVP Level: View HOD leaves (Pending AVP)
             if status_filter and status_filter != 'All':
-                leaves = leaves.filter(status__iexact=status_filter)
+                leaves = [l for l in leaves if (l.status or '').lower() == status_filter.lower()]
             else:
-                leaves = leaves.filter(status__in=['Pending AVP', 'Pending HOD', 'Pending'])
+                leaves = [l for l in leaves if (l.status or '').lower() in ['pending avp', 'pending hod', 'pending']]
             if department and department != 'All':
                 dept_ctx = resolve_department_filter(department)
                 target_terms = dept_ctx['target_terms']
-                q_dept = Q()
-                for t in target_terms:
-                    q_dept |= Q(department__icontains=t) | Q(department_id__icontains=t)
-                leaves = leaves.filter(q_dept)
+                leaves = [l for l in leaves if any(t.lower() in (l.department or '').lower() or t.lower() in (l.department_id or '').lower() for t in target_terms)]
 
         elif is_hod:
             # 2. HOD Level: View department leaves waiting for HOD approval
             if caller_id:
-                leaves = leaves.exclude(employee_id=str(caller_id).strip())
+                leaves = [l for l in leaves if str(l.employee_id).strip() != str(caller_id).strip()]
 
             if status_filter and status_filter != 'All':
-                leaves = leaves.filter(status__iexact=status_filter)
+                leaves = [l for l in leaves if (l.status or '').lower() == status_filter.lower()]
             else:
-                leaves = leaves.filter(status__in=['Pending HOD', 'Pending'])
+                leaves = [l for l in leaves if (l.status or '').lower() in ['pending hod', 'pending']]
 
             target_depts = assigned_depts or ([department] if department and department != 'All' else [])
             if target_depts:
-                q_hod = Q()
-                for d in target_depts:
-                    dept_ctx = resolve_department_filter(d)
-                    target_terms = dept_ctx['target_terms']
-                    matching_emp_ids = dept_ctx['matching_employee_ids'] or set()
-                    if matching_emp_ids:
-                        q_hod |= Q(employee_id__in=matching_emp_ids)
-                    for t in target_terms:
-                        q_hod |= Q(department__icontains=t) | Q(department_id__icontains=t)
-                leaves = leaves.filter(q_hod)
+                dept_ctx = resolve_department_filter(",".join(target_depts))
+                target_terms = dept_ctx['target_terms']
+                matching_emp_ids = dept_ctx['matching_employee_ids'] or set()
+                filtered = []
+                for l in leaves:
+                    if matching_emp_ids and str(l.employee_id).strip() in matching_emp_ids:
+                        filtered.append(l)
+                    elif any(t.lower() in (l.department or '').lower() or t.lower() in (l.department_id or '').lower() for t in target_terms):
+                        filtered.append(l)
+                leaves = filtered
             else:
-                leaves = LeaveRequest.objects.none()
+                leaves = []
 
         elif is_incharge:
             # 3. INCHARGE Level: View ward/department staff leaves for Level 1 review
             if caller_id:
-                leaves = leaves.exclude(employee_id=str(caller_id).strip())
+                leaves = [l for l in leaves if str(l.employee_id).strip() != str(caller_id).strip()]
 
             if status_filter and status_filter != 'All':
-                leaves = leaves.filter(status__iexact=status_filter)
+                if status_filter.lower() == 'approved':
+                    leaves = [l for l in leaves if (l.status or '').lower() == 'approved' or str(getattr(l, 'incharge_id', '')).strip() == str(caller_id).strip() or (l.status or '') == 'Pending HOD']
+                else:
+                    leaves = [l for l in leaves if (l.status or '').lower() == status_filter.lower()]
             else:
-                leaves = leaves.filter(status__in=['Pending Incharge', 'Pending'])
+                leaves = [l for l in leaves if (l.status or '').lower() in ['pending incharge', 'pending']]
 
             target_depts = assigned_depts or ([department] if department and department != 'All' else [])
             if target_depts:
-                q_inc = Q()
-                for d in target_depts:
-                    dept_ctx = resolve_department_filter(d)
-                    target_terms = dept_ctx['target_terms']
-                    matching_emp_ids = dept_ctx['matching_employee_ids'] or set()
-                    if matching_emp_ids:
-                        q_inc |= Q(employee_id__in=matching_emp_ids)
-                    for t in target_terms:
-                        q_inc |= Q(department__icontains=t) | Q(department_id__icontains=t)
-                leaves = leaves.filter(q_inc)
+                dept_ctx = resolve_department_filter(",".join(target_depts))
+                target_terms = dept_ctx['target_terms']
+                matching_emp_ids = dept_ctx['matching_employee_ids'] or set()
+                filtered = []
+                for l in leaves:
+                    if matching_emp_ids and str(l.employee_id).strip() in matching_emp_ids:
+                        filtered.append(l)
+                    elif any(t.lower() in (l.department or '').lower() or t.lower() in (l.department_id or '').lower() for t in target_terms):
+                        filtered.append(l)
+                leaves = filtered
             else:
-                leaves = LeaveRequest.objects.none()
+                leaves = []
 
         elif is_admin:
             # 4. ADMIN: Full visibility
             if status_filter and status_filter != 'All':
-                leaves = leaves.filter(status__iexact=status_filter)
+                leaves = [l for l in leaves if (l.status or '').lower() == status_filter.lower()]
             elif not status_filter:
-                leaves = leaves.filter(status__in=['Pending', 'Pending Incharge', 'Pending HOD', 'Pending AVP'])
+                leaves = [l for l in leaves if (l.status or '') in ['Pending', 'Pending Incharge', 'Pending HOD', 'Pending AVP']]
             if department and department != 'All':
                 dept_ctx = resolve_department_filter(department)
                 target_terms = dept_ctx['target_terms']
-                q_dept = Q()
-                for t in target_terms:
-                    q_dept |= Q(department__icontains=t) | Q(department_id__icontains=t)
-                leaves = leaves.filter(q_dept)
+                leaves = [l for l in leaves if any(t.lower() in (l.department or '').lower() or t.lower() in (l.department_id or '').lower() for t in target_terms)]
         else:
             # Non-approver employee has no approval items
             return Response([], status=200)
@@ -339,11 +342,34 @@ def pending_leaves(request):
             for r in Register.objects.filter(employee_id__in=emp_ids)
         }
 
+        from employees.views.common.utils import get_cached_reference_maps
+        dept_map, _, _ = get_cached_reference_maps()
+
+        missing_name_eids = [str(l.employee_id).strip() for l in leaves if l.employee_id and not l.employee_name]
+        prof_map = {}
+        if missing_name_eids:
+            try:
+                from employees.views.common.utils import get_mongo_client
+                client = get_mongo_client()
+                if client:
+                    global_db = client[os.environ.get('GLOBAL_DB_NAME', 'Global')]
+                    profs = list(global_db['backend_diagnostics_profile'].find(
+                        {'employeeId': {'$in': missing_name_eids}},
+                        {'employeeId': 1, 'employeeName': 1, 'name': 1}
+                    ))
+                    for p in profs:
+                        eid = str(p.get('employeeId', '')).strip()
+                        pname = p.get('employeeName') or p.get('name')
+                        if eid and pname:
+                            prof_map[eid] = pname
+            except Exception:
+                pass
+
         data = [{
             "id": l.id,
             "employee_id": l.employee_id,
-            "employee_name": l.employee_name or f"Employee #{l.employee_id}",
-            "department": resolve_leave_department(l, reg_map),
+            "employee_name": l.employee_name or prof_map.get(str(l.employee_id).strip()) or f"Employee #{l.employee_id}",
+            "department": resolve_leave_department(l, reg_map, dept_map),
             "department_code": l.department_id or l.department,
             "start_date": l.start_date,
             "end_date": l.end_date,
@@ -372,6 +398,8 @@ def pending_leaves(request):
         } for l in leaves]
         return Response(data, status=200)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response({"error": str(e)}, status=500)
 
 @api_view(['GET'])
@@ -436,12 +464,34 @@ def leave_history(request):
             str(r.employee_id).strip(): (r.department or '')
             for r in Register.objects.filter(employee_id__in=hist_emp_ids)
         }
+        from employees.views.common.utils import get_cached_reference_maps
+        dept_map, _, _ = get_cached_reference_maps()
+
+        missing_hist_eids = [str(l.employee_id).strip() for l in leaves if l.employee_id and not l.employee_name]
+        hist_prof_map = {}
+        if missing_hist_eids:
+            try:
+                from employees.views.common.utils import get_mongo_client
+                client = get_mongo_client()
+                if client:
+                    global_db = client[os.environ.get('GLOBAL_DB_NAME', 'Global')]
+                    profs = list(global_db['backend_diagnostics_profile'].find(
+                        {'employeeId': {'$in': missing_hist_eids}},
+                        {'employeeId': 1, 'employeeName': 1, 'name': 1}
+                    ))
+                    for p in profs:
+                        eid = str(p.get('employeeId', '')).strip()
+                        pname = p.get('employeeName') or p.get('name')
+                        if eid and pname:
+                            hist_prof_map[eid] = pname
+            except Exception:
+                pass
 
         data = [{
             "id": l.id,
             "employee_id": l.employee_id,
-            "employee_name": l.employee_name or f"Employee #{l.employee_id}",
-            "department": resolve_leave_department(l, hist_reg_map),
+            "employee_name": l.employee_name or hist_prof_map.get(str(l.employee_id).strip()) or f"Employee #{l.employee_id}",
+            "department": resolve_leave_department(l, hist_reg_map, dept_map),
             "department_code": l.department_id or l.department,
             "start_date": l.start_date,
             "end_date": l.end_date,
@@ -460,6 +510,8 @@ def leave_history(request):
         } for l in leaves]
         return Response(data, status=200)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response({"error": str(e)}, status=500)
 
 @api_view(['PUT', 'POST'])
@@ -672,6 +724,8 @@ def update_leave_status(request, leave_id):
     except LeaveRequest.DoesNotExist:
         return Response({"error": "Leave request not found"}, status=404)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response({"error": str(e)}, status=500)
 
 
@@ -694,8 +748,11 @@ def get_leave_balances(request):
     from django.http import HttpResponse
 
     try:
-        mongo_uri = os.environ.get('GLOBAL_DB_HOST', 'mongodb://admin:SMRFT%40prod2026@45.252.190.162:27017/')
-        client = MongoClient(mongo_uri)
+        from employees.views.common.utils import get_mongo_client
+        client = get_mongo_client()
+        if not client:
+            mongo_uri = os.environ.get('GLOBAL_DB_HOST', 'mongodb://admin:SMRFT%40prod2026@45.252.190.162:27017/')
+            client = MongoClient(mongo_uri)
         db = client['Global']
         coll = db['employees_leave_balance']
 
@@ -767,19 +824,15 @@ def get_leave_balances(request):
         include_inactive = str(request.query_params.get('include_inactive', 'false')).lower() in ['true', '1', 'yes']
         from employees.views.common.utils import get_inactive_employee_ids
         inactive_ids = get_inactive_employee_ids()
-        if not include_inactive and inactive_ids:
-            if 'employee_id' in query:
-                if isinstance(query['employee_id'], str) and query['employee_id'] in inactive_ids:
-                    return Response({'summary': {'total_employees': 0, 'total_available_leaves': 0, 'total_el': 0, 'total_nh': 0, 'total_sl': 0, 'filtered_count': 0, 'departments': []}, 'records': []}, status=200)
-            else:
-                query['employee_id'] = {'$nin': list(inactive_ids)}
+        if not include_inactive and inactive_ids and 'employee_id' in query:
+            if isinstance(query['employee_id'], str) and query['employee_id'] in inactive_ids:
+                return Response({'summary': {'total_employees': 0, 'total_available_leaves': 0, 'total_el': 0, 'total_nh': 0, 'total_sl': 0, 'filtered_count': 0, 'departments': []}, 'records': []}, status=200)
 
-        # Fetch records
-        cursor = coll.find(query).sort([
-            ('leave_balances.total_available', -1),
-            ('employee_id', 1)
-        ])
-        raw_records = list(cursor)
+        # Fetch records directly and filter/sort in memory (fast and avoids DB timeout)
+        raw_records = list(coll.find(query))
+        if not include_inactive and inactive_ids:
+            raw_records = [r for r in raw_records if str(r.get('employee_id')).strip() not in inactive_ids]
+        raw_records.sort(key=lambda r: (-float(r.get('leave_balances', {}).get('total_available', 0.0)), str(r.get('employee_id', ''))))
 
         # Fallback: If querying a specific employee and no balance record exists yet, create default entry from Mongo profile
         if not raw_records and emp_id:
@@ -964,7 +1017,13 @@ def get_leave_balances(request):
             }},
             {'$sort': {'total_leaves': -1}}
         ])
-        dept_summary_raw = list(coll.aggregate(pipeline))
+        dept_summary_raw = []
+        if not emp_id:
+            try:
+                dept_summary_raw = list(coll.aggregate(pipeline, maxTimeMS=4000))
+            except Exception as agg_err:
+                print("Aggregate warning, fallback to records summary:", agg_err)
+
         dept_summary = []
         overall_total_leaves = 0.0
         overall_total_el = 0.0
@@ -974,36 +1033,56 @@ def get_leave_balances(request):
         overall_total_taken = 0.0
         overall_total_emps = 0
 
-        for d in dept_summary_raw:
-            d_dept = d['_id'] or 'Uncategorized'
-            c = d['count']
-            tot = round(d.get('total_leaves', 0.0), 2)
-            el = round(d.get('total_el', 0.0), 2)
-            nh = round(d.get('total_nh', 0.0), 2)
-            sl = round(d.get('total_sl', 0.0), 2)
-            elig = round(d.get('total_eligible', 0.0), 2)
-            taken = round(d.get('total_taken', 0.0), 2)
+        if dept_summary_raw:
+            for d in dept_summary_raw:
+                d_dept = d['_id'] or 'Uncategorized'
+                c = d['count']
+                tot = round(d.get('total_leaves', 0.0), 2)
+                el = round(d.get('total_el', 0.0), 2)
+                nh = round(d.get('total_nh', 0.0), 2)
+                sl = round(d.get('total_sl', 0.0), 2)
+                elig = round(d.get('total_eligible', 0.0), 2)
+                taken = round(d.get('total_taken', 0.0), 2)
 
-            dept_summary.append({
-                'department': d_dept,
-                'department_code': d.get('department_code', ''),
-                'employee_count': c,
-                'total_leaves': tot,
-                'total_el': el,
-                'total_nh': nh,
-                'total_sl': sl,
-                'total_eligible': elig,
-                'total_taken': taken,
-                'avg_leaves_per_emp': round(tot / c, 1) if c else 0.0
-            })
+                dept_summary.append({
+                    'department': d_dept,
+                    'department_code': d.get('department_code', ''),
+                    'employee_count': c,
+                    'total_leaves': tot,
+                    'total_el': el,
+                    'total_nh': nh,
+                    'total_sl': sl,
+                    'total_eligible': elig,
+                    'total_taken': taken,
+                    'avg_leaves_per_emp': round(tot / c, 1) if c else 0.0
+                })
 
-            overall_total_leaves += tot
-            overall_total_el += el
-            overall_total_nh += nh
-            overall_total_sl += sl
-            overall_total_eligible += elig
-            overall_total_taken += taken
-            overall_total_emps += c
+                overall_total_leaves += tot
+                overall_total_el += el
+                overall_total_nh += nh
+                overall_total_sl += sl
+                overall_total_eligible += elig
+                overall_total_taken += taken
+                overall_total_emps += c
+        else:
+            for r in records:
+                lb = r.get('leave_balances', {})
+                ee = r.get('eligible_entitlement', {})
+                lt = r.get('leaves_taken', {})
+                tot = float(lb.get('total_available', 0.0))
+                el = float(lb.get('EL', 0.0))
+                nh = float(lb.get('PH', lb.get('NH', 0.0)))
+                sl = float(lb.get('SL', 0.0))
+                elig = float(ee.get('total_eligible', 33.0))
+                taken = float(lt.get('total_taken', 0.0))
+
+                overall_total_leaves += tot
+                overall_total_el += el
+                overall_total_nh += nh
+                overall_total_sl += sl
+                overall_total_eligible += elig
+                overall_total_taken += taken
+                overall_total_emps += 1
 
         summary = {
             'total_employees': overall_total_emps,
@@ -1025,6 +1104,8 @@ def get_leave_balances(request):
         }, status=status.HTTP_200_OK)
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

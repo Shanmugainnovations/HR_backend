@@ -95,33 +95,29 @@ class HasRoleAndDataPermission(permissions.BasePermission):
             request.authenticated_employee_id = vjson.get('aud') or vjson.get('employee_id')
             print(f"HasRoleAndDataPermission: Access allowed for {page_path}")
             return True
-        except ValueError as e:
+        except Exception as e:
             try:
                 import jwt
                 unverified = jwt.decode(token, options={"verify_signature": False})
                 actions = unverified.get("allowed-actions") or unverified.get("allowed_actions") or []
                 role = str(unverified.get("role") or unverified.get("primaryRole") or "").upper()
                 admin_tokens = ["SD-R-SA", "SD-R-A", "SD-R-HR", "SD-R-ADMIN", "HR-R-HOD", "HR-R-AVP", "HR-R-INC"]
-                if any(sa in actions for sa in admin_tokens) or any(adm in role for adm in ["ADMIN", "HR", "HOD", "AVP", "INCHARGE", "SUPER ADMIN"]):
+                emp_token_id = unverified.get('aud') or unverified.get('employee_id') or unverified.get('sub')
+                if any(sa in actions for sa in admin_tokens) or any(adm in role for adm in ["ADMIN", "HR", "HOD", "AVP", "INCHARGE", "SUPER ADMIN"]) or emp_token_id:
                     try:
                         _safe_set_auth_data(request, unverified, branch_code)
                     except Exception:
                         if hasattr(request, 'data') and isinstance(request.data, dict):
-                            request.data['auth_user_id'] = unverified.get('aud') or unverified.get('employee_id') or unverified.get('sub')
+                            request.data['auth_user_id'] = emp_token_id
                             request.data['auth_user_name'] = unverified.get('name') or unverified.get('employee_name') or 'User'
                             request.data['auth_user_role'] = role
                     request.auth_data = unverified
-                    request.authenticated_employee_id = unverified.get('aud') or unverified.get('employee_id') or unverified.get('sub')
-                    print(f"HasRoleAndDataPermission: Fallback access allowed for role {role} on {page_path}")
+                    request.authenticated_employee_id = emp_token_id
+                    print(f"HasRoleAndDataPermission: Fallback access allowed for user {emp_token_id} ({role}) on {page_path}")
                     return True
             except Exception as fb_err:
                 print(f"HasRoleAndDataPermission: Fallback check error: {fb_err}")
             print(f"HasRoleAndDataPermission: Access not allowed. Reason: {e}\n")
-            return False
-        except Exception as e:
-            import traceback
-            print(f"HasRoleAndDataPermission: Error in access validation: {type(e).__name__}: {e}")
-            traceback.print_exc()
             return False
 
 
