@@ -99,11 +99,12 @@ class HasRoleAndDataPermission(permissions.BasePermission):
             try:
                 import jwt
                 unverified = jwt.decode(token, options={"verify_signature": False})
-                actions = unverified.get("allowed-actions") or unverified.get("allowed_actions") or []
-                role = str(unverified.get("role") or unverified.get("primaryRole") or "").upper()
-                admin_tokens = ["SD-R-SA", "SD-R-A", "SD-R-HR", "SD-R-ADMIN", "HR-R-HOD", "HR-R-AVP", "HR-R-INC"]
+                actions = [str(a).strip().upper() for a in (unverified.get("allowed-actions") or unverified.get("allowed_actions") or []) if a]
+                role = str(unverified.get("role") or unverified.get("primaryRole") or "").strip().upper()
+                hr_role_tokens = {"SD-R-HR", "HR-R-AVP", "HR-R-HOD", "HR-R-INC", "HR-R-EMP"}
+                exact_hr_roles = {"SD-R-HR", "HR-ADMIN", "ADMIN", "HR-R-AVP", "AVP", "HR-R-HOD", "HOD", "HR-R-INC", "INCHARGE", "INC", "HR-R-EMP", "EMPLOYEE"}
                 emp_token_id = unverified.get('aud') or unverified.get('employee_id') or unverified.get('sub')
-                if any(sa in actions for sa in admin_tokens) or any(adm in role for adm in ["ADMIN", "HR", "HOD", "AVP", "INCHARGE", "SUPER ADMIN"]) or emp_token_id:
+                if any(sa in hr_role_tokens for sa in actions) or role in exact_hr_roles or emp_token_id:
                     try:
                         _safe_set_auth_data(request, unverified, branch_code)
                     except Exception:

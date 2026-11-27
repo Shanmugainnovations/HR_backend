@@ -124,33 +124,49 @@ def apply_leave(request):
             (reg.role if reg else '')
         ).strip().upper()
 
-        # 3-Tier Hierarchical Approval routing:
+        # 3-Tier Hierarchical Approval routing (Incharge -> HOD -> AVP):
+        # If no HOD exists in the department, route directly to AVP!
+        has_incharge = False
+        has_hod = False
+        dept_key = raw_dept_id or raw_dept
+        if dept_key:
+            dept_ctx = resolve_department_filter(dept_key)
+            target_terms = dept_ctx.get('target_terms', set()) or {dept_key}
+            from django.db.models import Q
+            q_dept = Q()
+            for t in target_terms:
+                if t:
+                    q_dept |= Q(department__icontains=t) | Q(assigned_departments__icontains=t)
+            matching_emp_ids = dept_ctx.get('matching_employee_ids', set())
+            if matching_emp_ids:
+                q_dept |= Q(employee_id__in=matching_emp_ids)
+
+            inc_users = list(Register.objects.filter(
+                Q(role__in=['HR-R-INC', 'Incharge', 'INCHARGE']) | Q(role__icontains='INCHARGE') | Q(role__icontains='HR-R-INC') | Q(role__endswith='-INC'),
+                q_dept
+            ))
+            has_incharge = any('AVP' not in (u.role or '').upper() and 'HOD' not in (u.role or '').upper() for u in inc_users)
+
+            hod_users = list(Register.objects.filter(
+                Q(role__in=['HR-R-HOD', 'HOD']) | Q(role__icontains='HOD'),
+                q_dept
+            ))
+            has_hod = any('AVP' not in (u.role or '').upper() for u in hod_users)
+
         if 'HOD' in requester_role:
             # 1. HOD applies -> Routes directly to Top Management (AVP)!
             initial_status = 'Pending AVP'
         elif 'INCHARGE' in requester_role or 'HR-R-INC' in requester_role or requester_role.endswith('-INC'):
-            # 2. Incharge applies -> Routes directly to HOD!
-            initial_status = 'Pending HOD'
+            # 2. Incharge applies -> Routes directly to HOD (or AVP if no HOD)!
+            initial_status = 'Pending HOD' if has_hod else 'Pending AVP'
         else:
-            # 3. Regular employee: check if Incharge exists for this department
-            has_incharge = False
-            dept_key = raw_dept_id or raw_dept
-            if dept_key:
-                dept_ctx = resolve_department_filter(dept_key)
-                target_terms = dept_ctx.get('target_terms', set()) or {dept_key}
-                from django.db.models import Q
-                q_dept = Q()
-                for t in target_terms:
-                    q_dept |= Q(department__icontains=t) | Q(assigned_departments__icontains=t)
-                inc_user = Register.objects.filter(
-                    Q(role__in=['HR-R-INC', 'Incharge', 'INCHARGE']) | Q(role__icontains='INCHARGE') | Q(role__icontains='HR-R-INC'),
-                    q_dept
-                ).first()
-                if inc_user:
-                    has_incharge = True
-            # If department has an Incharge -> Level 1 (Pending Incharge)
-            # If no Incharge allocated for this department -> Routes directly to Level 2 (Pending HOD)
-            initial_status = 'Pending Incharge' if has_incharge else 'Pending HOD'
+            # 3. Regular employee:
+            if has_incharge:
+                initial_status = 'Pending Incharge'
+            elif has_hod:
+                initial_status = 'Pending HOD'
+            else:
+                initial_status = 'Pending AVP'
 
         start_str = request.data.get('start_date')
         end_str = request.data.get('end_date')
@@ -259,13 +275,14 @@ def pending_leaves(request):
         assigned_depts = ctx['assigned_departments']
 
         if is_avp:
-            # 1. AVP Level: View HOD leaves (Pending AVP)
+            # 1. AVP Level: View HOD leaves and leaves from departments without HOD
             if status_filter and status_filter != 'All':
                 leaves = [l for l in leaves if (l.status or '').lower() == status_filter.lower()]
             else:
                 leaves = [l for l in leaves if (l.status or '').lower() in ['pending avp', 'pending hod', 'pending']]
-            if department and department != 'All':
-                dept_ctx = resolve_department_filter(department)
+            target_depts = [department] if department and department != 'All' else (assigned_depts or [])
+            if target_depts:
+                dept_ctx = resolve_department_filter(",".join(target_depts))
                 target_terms = dept_ctx['target_terms']
                 leaves = [l for l in leaves if any(t.lower() in (l.department or '').lower() or t.lower() in (l.department_id or '').lower() for t in target_terms)]
 
@@ -550,8 +567,28 @@ def update_leave_status(request, leave_id):
             leave.incharge_remarks = remarks
             leave.incharge_date = now_dt
             if status_val == 'Approved':
-                leave.status = 'Pending HOD'
-                action_msg = f"Leave recommended by Incharge {reviewer_name} and forwarded to HOD."
+                req_dept = getattr(leave, 'department_id', '') or getattr(leave, 'department', '')
+                has_hod = False
+                if req_dept:
+                    dept_ctx = resolve_department_filter(req_dept)
+                    target_terms = dept_ctx.get('target_terms', set()) or {req_dept}
+                    from django.db.models import Q
+                    q_dept = Q()
+                    for t in target_terms:
+                        if t:
+                            q_dept |= Q(department__icontains=t) | Q(assigned_departments__icontains=t)
+                    hod_users = list(Register.objects.filter(
+                        Q(role__in=['HR-R-HOD', 'HOD']) | Q(role__icontains='HOD'),
+                        q_dept
+                    ))
+                    has_hod = any('AVP' not in (u.role or '').upper() for u in hod_users)
+
+                if has_hod:
+                    leave.status = 'Pending HOD'
+                    action_msg = f"Leave recommended by Incharge {reviewer_name} and forwarded to HOD."
+                else:
+                    leave.status = 'Pending AVP'
+                    action_msg = f"Leave recommended by Incharge {reviewer_name} and forwarded to AVP."
             else:
                 leave.status = 'Rejected'
                 action_msg = f"Leave rejected by Incharge {reviewer_name}."

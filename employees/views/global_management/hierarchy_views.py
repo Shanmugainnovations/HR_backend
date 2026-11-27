@@ -29,13 +29,20 @@ def get_approver_hierarchy(request):
         global_db_name = os.environ.get('GLOBAL_DB_NAME', 'Global')
         db = client[global_db_name] if client else None
 
-        # 1. Department code to name lookup
+        # 1. Department code to name & Designation code to name lookup
         dept_map = {}
+        desig_map = {}
         if db is not None:
             for d in db['backend_diagnostics_Departments'].find({}, {'department_code': 1, 'department_name': 1, '_id': 0}):
                 code = d.get('department_code')
                 if code:
                     dept_map[code] = d.get('department_name', code)
+
+            for ds in db['backend_diagnostics_Designation'].find({}, {'Designation_code': 1, 'designation': 1, '_id': 0}):
+                d_code = ds.get('Designation_code')
+                d_name = ds.get('designation')
+                if d_code and d_name:
+                    desig_map[d_code] = d_name
 
         # 2. Active employees count per department & profiles
         active_user_ids = get_active_user_employee_ids()
@@ -79,6 +86,13 @@ def get_approver_hierarchy(request):
         hod_records = Register.objects.filter(role__in=['HR-R-HOD', 'HOD'])
         inc_records = Register.objects.filter(role__in=['HR-R-INC', 'Incharge', 'INCHARGE'])
 
+        def _extract_approver_depts(record):
+            """Use assigned_departments when explicitly allocated; fall back to department only if unassigned."""
+            raw_assigned = str(getattr(record, 'assigned_departments', '') or '').strip()
+            raw_dept = str(getattr(record, 'department', '') or '').strip()
+            source = raw_assigned if raw_assigned and raw_assigned.lower() not in ['none', 'unassigned'] else raw_dept
+            return {d.strip() for d in source.split(',') if d.strip()}
+
         # Build Incharges
         incharges = []
         seen_inc_eids = set()
@@ -88,26 +102,19 @@ def get_approver_hierarchy(request):
                 continue
             seen_inc_eids.add(eid)
 
-            depts = set()
-            if i.department:
-                for d in i.department.split(','):
-                    if d.strip():
-                        depts.add(d.strip())
-            if i.assigned_departments:
-                for d in i.assigned_departments.split(','):
-                    if d.strip():
-                        depts.add(d.strip())
+            depts = _extract_approver_depts(i)
 
             sup_hods = [x.strip() for x in str(i.supervising_hod_ids or '').split(',') if x.strip()]
             parent_appr = str(i.parent_approver_id or '').strip()
             prof = profile_map.get(eid, {})
+            home_dept = prof.get('department') or i.department or ''
 
             incharges.append({
                 'id': i.id,
                 'employee_id': eid,
                 'name': prof.get('name') or i.name or 'Incharge',
                 'role': 'INCHARGE',
-                'primary_department_code': str(i.department or '').split(',')[0].strip() if i.department else '',
+                'primary_department_code': str(home_dept).split(',')[0].strip() if home_dept else '',
                 'departments': sorted(list(depts)),
                 'supervising_hod_ids': sup_hods,
                 'parent_approver_id': parent_appr,
@@ -126,26 +133,19 @@ def get_approver_hierarchy(request):
                 continue
             seen_hod_eids.add(eid)
 
-            depts = set()
-            if h.department:
-                for d in h.department.split(','):
-                    if d.strip():
-                        depts.add(d.strip())
-            if h.assigned_departments:
-                for d in h.assigned_departments.split(','):
-                    if d.strip():
-                        depts.add(d.strip())
+            depts = _extract_approver_depts(h)
 
             sup_incs = [x.strip() for x in str(h.supervising_incharge_ids or '').split(',') if x.strip()]
             parent_appr = str(h.parent_approver_id or '').strip()
             prof = profile_map.get(eid, {})
+            home_dept = prof.get('department') or h.department or ''
 
             hods.append({
                 'id': h.id,
                 'employee_id': eid,
                 'name': prof.get('name') or h.name or 'Department Head',
                 'role': 'HOD',
-                'primary_department_code': str(h.department or '').split(',')[0].strip() if h.department else '',
+                'primary_department_code': str(home_dept).split(',')[0].strip() if home_dept else '',
                 'departments': sorted(list(depts)),
                 'supervising_incharge_ids': sup_incs,
                 'parent_approver_id': parent_appr,
@@ -164,23 +164,16 @@ def get_approver_hierarchy(request):
                 continue
             seen_avp_eids.add(eid)
 
-            depts = set()
-            if a.department:
-                for d in a.department.split(','):
-                    if d.strip():
-                        depts.add(d.strip())
-            if a.assigned_departments:
-                for d in a.assigned_departments.split(','):
-                    if d.strip():
-                        depts.add(d.strip())
+            depts = _extract_approver_depts(a)
 
             prof = profile_map.get(eid, {})
+            home_dept = prof.get('department') or a.department or ''
             avps.append({
                 'id': a.id,
                 'employee_id': eid,
                 'name': prof.get('name') or a.name or 'Assistant Vice President',
                 'role': 'AVP',
-                'primary_department_code': str(a.department or '').split(',')[0].strip() if a.department else '',
+                'primary_department_code': str(home_dept).split(',')[0].strip() if home_dept else '',
                 'departments': sorted(list(depts)),
                 'profileImage': prof.get('profileImage'),
                 'designation': prof.get('designation') or 'Assistant Vice President',
@@ -628,6 +621,175 @@ def get_approver_hierarchy(request):
                 'avps': available_avps,
                 'hods': available_hods
             } if user_ctx.get('is_admin') else None
+        }, status=200)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([HasRoleAndDataPermission])
+def get_approver_hierarchy_staff(request):
+    """
+    Returns active employees for a given department, incharge, HOD, or AVP in the Approver Hierarchy.
+    Query parameters:
+    - department_code or department_codes: comma-separated list of department codes
+    - incharge_id: employee ID of incharge (returns staff in incharge's departments)
+    - hod_id: employee ID of HOD (returns staff in HOD's departments)
+    - avp_id: employee ID of AVP (returns staff in AVP's departments)
+    - search: optional search filter for employee name, ID, or designation
+    """
+    try:
+        client = get_mongo_client()
+        global_db_name = os.environ.get('GLOBAL_DB_NAME', 'Global')
+        db = client[global_db_name] if client else None
+
+        # 1. Department code to name & Designation code to name lookup
+        dept_map = {}
+        desig_map = {}
+        if db is not None:
+            for d in db['backend_diagnostics_Departments'].find({}, {'department_code': 1, 'department_name': 1, '_id': 0}):
+                code = d.get('department_code')
+                if code:
+                    dept_map[code] = d.get('department_name', code)
+
+            for ds in db['backend_diagnostics_Designation'].find({}, {'Designation_code': 1, 'designation': 1, '_id': 0}):
+                d_code = ds.get('Designation_code')
+                d_name = ds.get('designation')
+                if d_code and d_name:
+                    desig_map[d_code] = d_name
+
+        # 2. Resolve target department codes from query params
+        req_dept_code = request.GET.get('department_code') or request.GET.get('department_codes') or ''
+        req_incharge_id = request.GET.get('incharge_id') or ''
+        req_hod_id = request.GET.get('hod_id') or ''
+        req_avp_id = request.GET.get('avp_id') or ''
+        search_query = (request.GET.get('search') or '').strip().lower()
+
+        target_dept_codes = set()
+        title_context = "Staff Directory"
+
+        if req_dept_code:
+            for c in req_dept_code.split(','):
+                c = c.strip()
+                if c:
+                    target_dept_codes.add(c)
+            if len(target_dept_codes) == 1:
+                single_code = list(target_dept_codes)[0]
+                title_context = f"{dept_map.get(single_code, single_code)} ({single_code})"
+            else:
+                title_context = f"Selected Units ({len(target_dept_codes)} Departments)"
+
+        elif req_incharge_id:
+            inc_reg = Register.objects.filter(employee_id=req_incharge_id).first()
+            if inc_reg:
+                raw = f"{inc_reg.department or ''},{inc_reg.assigned_departments or ''}"
+                for d in raw.split(','):
+                    if d.strip():
+                        target_dept_codes.add(d.strip())
+                title_context = f"Staff under Incharge {inc_reg.name or req_incharge_id}"
+            else:
+                title_context = f"Staff under Incharge ({req_incharge_id})"
+
+        elif req_hod_id:
+            hod_reg = Register.objects.filter(employee_id=req_hod_id).first()
+            if hod_reg:
+                raw = f"{hod_reg.department or ''},{hod_reg.assigned_departments or ''}"
+                for d in raw.split(','):
+                    if d.strip():
+                        target_dept_codes.add(d.strip())
+                title_context = f"Staff under HOD {hod_reg.name or req_hod_id}"
+            else:
+                title_context = f"Staff under HOD ({req_hod_id})"
+
+        elif req_avp_id:
+            avp_reg = Register.objects.filter(employee_id=req_avp_id).first()
+            if avp_reg:
+                raw = f"{avp_reg.department or ''},{avp_reg.assigned_departments or ''}"
+                for d in raw.split(','):
+                    if d.strip():
+                        target_dept_codes.add(d.strip())
+                title_context = f"Staff under AVP {avp_reg.name or req_avp_id}"
+            else:
+                title_context = f"Staff under AVP ({req_avp_id})"
+
+        target_dept_codes_upper = {c.upper() for c in target_dept_codes}
+
+        # 3. Fetch active employees from backend_diagnostics_profile
+        active_user_ids = get_active_user_employee_ids()
+        inactive_ids = get_inactive_employee_ids()
+        matched_employees = []
+
+        if db is not None:
+            profiles = list(db['backend_diagnostics_profile'].find({}, {
+                'employeeId': 1, 'employeeName': 1, 'department': 1,
+                'designation': 1, 'email': 1, 'mobileNumber': 1,
+                'profileImage': 1, 'is_active': 1, 'status': 1, '_id': 0
+            }))
+
+            for p in profiles:
+                eid = str(p.get('employeeId') or '').strip()
+                if not eid or (active_user_ids and eid not in active_user_ids) or eid in inactive_ids:
+                    continue
+                if p.get('is_active') is False:
+                    continue
+                p_status = str(p.get('status') or '').lower()
+                if p_status in ['inactive', 'disabled', 'resigned', 'left']:
+                    continue
+
+                raw_depts = str(p.get('department') or '').strip()
+                emp_depts = [c.strip() for c in raw_depts.split(',') if c.strip()]
+                emp_depts_upper = [c.upper() for c in emp_depts]
+
+                # Filter by target departments if any specified
+                if target_dept_codes_upper:
+                    if not any(c in target_dept_codes_upper for c in emp_depts_upper):
+                        continue
+
+                emp_name = p.get('employeeName') or 'Unnamed'
+                raw_desig = p.get('designation') or ''
+                designation = desig_map.get(raw_desig, raw_desig) or 'Staff'
+                email = p.get('email') or ''
+                mobile = p.get('mobileNumber') or ''
+                primary_dept_code = emp_depts[0] if emp_depts else ''
+                primary_dept_name = dept_map.get(primary_dept_code, primary_dept_code)
+
+                # Search filter
+                if search_query:
+                    search_corpus = f"{eid} {emp_name} {designation} {primary_dept_name} {primary_dept_code} {email} {mobile}".lower()
+                    if search_query not in search_corpus:
+                        continue
+
+                matched_employees.append({
+                    'employee_id': eid,
+                    'name': emp_name,
+                    'designation': designation,
+                    'department_code': primary_dept_code,
+                    'department_name': primary_dept_name,
+                    'department_codes': emp_depts,
+                    'email': email,
+                    'mobile': mobile,
+                    'profile_image': p.get('profileImage') or None,
+                    'status': 'Active'
+                })
+
+        # Sort employees alphabetically by name
+        matched_employees.sort(key=lambda x: (x['name'] or '').lower())
+
+        # List of departments involved
+        departments_summary = [
+            {'code': c, 'name': dept_map.get(c, c)}
+            for c in sorted(list(target_dept_codes))
+        ]
+
+        return JsonResponse({
+            'success': True,
+            'title': title_context,
+            'total_count': len(matched_employees),
+            'departments': departments_summary,
+            'employees': matched_employees
         }, status=200)
 
     except Exception as e:

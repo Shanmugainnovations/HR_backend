@@ -103,31 +103,38 @@ def registration(request):
                             }
                         ]
                     }))
+                    active_approver_ids = set()
                     for ga in global_approvers:
                         emp_id = str(ga.get('employeeId') or '').strip()
                         if not emp_id:
                             continue
+                        if ga.get('is_active') is False:
+                            continue
+                        p_status = str(ga.get('status') or '').strip().lower()
+                        if p_status in ['inactive', 'disabled', 'resigned', 'left']:
+                            continue
                         name = ga.get('employeeName') or ga.get('name') or emp_id
                         dept = ga.get('department') or ''
 
-                        # Determine matching role
+                        # Determine matching role (Precedence: AVP > HOD > Incharge)
                         roles_list = []
                         if ga.get('primaryRole'):
-                            roles_list.append(str(ga.get('primaryRole')))
+                            roles_list.append(str(ga.get('primaryRole')).strip())
                         if isinstance(ga.get('additionalRoles'), list):
-                            roles_list.extend([str(r) for r in ga.get('additionalRoles')])
+                            roles_list.extend([str(r).strip() for r in ga.get('additionalRoles') if r])
                         elif ga.get('additionalRoles'):
-                            roles_list.append(str(ga.get('additionalRoles')))
+                            roles_list.append(str(ga.get('additionalRoles')).strip())
 
                         if 'HR-R-AVP' in roles_list:
                             detected_role = 'HR-R-AVP'
-                        elif 'HR-R-INC' in roles_list:
-                            detected_role = 'HR-R-INC'
                         elif 'HR-R-HOD' in roles_list:
                             detected_role = 'HR-R-HOD'
+                        elif 'HR-R-INC' in roles_list:
+                            detected_role = 'HR-R-INC'
                         else:
                             continue
 
+                        active_approver_ids.add(emp_id)
                         existing_user = users_col.find_one({'employee_id': emp_id})
                         if existing_user:
                             users_col.update_one(
@@ -164,6 +171,18 @@ def registration(request):
                                 role=detected_role,
                                 password='Password@123',
                                 confirmPassword='Password@123'
+                            )
+
+                    # Demote stale approvers in Register who no longer hold an active HR approver role in Global profile
+                    stale_regs = Register.objects.filter(role__in=['HR-R-HOD', 'HR-R-AVP', 'HR-R-INC'])
+                    for sr in stale_regs:
+                        sr_eid = str(sr.employee_id or '').strip()
+                        if sr_eid and sr_eid not in active_approver_ids:
+                            sr.role = 'Employee'
+                            sr.save(update_fields=['role'])
+                            users_col.update_many(
+                                {'employee_id': sr_eid, 'role': {'$in': ['HR-R-HOD', 'HR-R-AVP', 'HR-R-INC']}},
+                                {'$set': {'role': 'Employee'}}
                             )
             except Exception as sync_err:
                 print(f"Approver sync notice: {sync_err}")
