@@ -140,31 +140,53 @@ def submit_permission_request(request):
         if not dept_name or dept_name == "Unassigned":
             dept_name = raw_dept if (raw_dept and not str(raw_dept).upper().startswith("DEPT")) else "General"
 
-        # Determine 2-tier initial status
+        # Determine 3-tier initial status (Incharge -> HOD -> AVP)
+        # If department has no Incharge and no HOD, route directly to AVP
         from django.db.models import Q
         from employees.views.common.utils import resolve_department_filter
+
+        has_incharge = False
+        has_hod = False
+        dept_to_check = raw_dept or dept_name
+        if dept_to_check:
+            resolved_info = resolve_department_filter(dept_to_check)
+            target_terms = resolved_info.get('target_terms', set()) or {dept_to_check}
+            q_dept = Q()
+            for t in target_terms:
+                if t:
+                    q_dept |= Q(department__icontains=t) | Q(assigned_departments__icontains=t)
+            matching_emp_ids = resolved_info.get('matching_employee_ids', set())
+            if matching_emp_ids:
+                q_dept |= Q(employee_id__in=matching_emp_ids)
+
+            inc_users = list(Register.objects.filter(
+                Q(role__in=['HR-R-INC', 'Incharge', 'INCHARGE']) | Q(role__icontains='INCHARGE') | Q(role__icontains='HR-R-INC') | Q(role__endswith='-INC'),
+                q_dept
+            ))
+            has_incharge = any('AVP' not in (u.role or '').upper() and 'HOD' not in (u.role or '').upper() for u in inc_users)
+
+            hod_users = list(Register.objects.filter(
+                Q(role__in=['HR-R-HOD', 'HOD']) | Q(role__icontains='HOD'),
+                q_dept
+            ))
+            has_hod = any('AVP' not in (u.role or '').upper() for u in hod_users)
 
         if 'HOD' in requester_role or 'HR-R-HOD' in requester_role:
             initial_status = 'Pending AVP'
             target_reviewer = 'AVP/HR'
         elif 'INCHARGE' in requester_role or 'HR-R-INC' in requester_role or requester_role.endswith('-INC'):
-            initial_status = 'Pending HOD'
-            target_reviewer = 'HOD'
+            initial_status = 'Pending HOD' if has_hod else 'Pending AVP'
+            target_reviewer = 'HOD' if has_hod else 'AVP'
         else:
-            # Regular employee: check if department has an assigned Incharge
-            has_incharge = False
-            dept_to_check = dept_name or raw_dept
-            if dept_to_check:
-                resolved_info = resolve_department_filter(dept_to_check)
-                matching_emp_ids = resolved_info.get('matching_employee_ids', set())
-                inc_qs = Register.objects.filter(
-                    Q(role__icontains='INCHARGE') | Q(role__icontains='HR-R-INC') | Q(role__endswith='-INC')
-                )
-                if matching_emp_ids:
-                    inc_qs = inc_qs.filter(employee_id__in=matching_emp_ids)
-                has_incharge = inc_qs.exists()
-            initial_status = 'Pending Incharge' if has_incharge else 'Pending HOD'
-            target_reviewer = 'Incharge' if has_incharge else 'HOD'
+            if has_incharge:
+                initial_status = 'Pending Incharge'
+                target_reviewer = 'Incharge'
+            elif has_hod:
+                initial_status = 'Pending HOD'
+                target_reviewer = 'HOD'
+            else:
+                initial_status = 'Pending AVP'
+                target_reviewer = 'AVP'
 
         now_dt = datetime.utcnow()
         req_id = f"perm-{uuid.uuid4().hex[:10]}"
@@ -368,7 +390,7 @@ def get_pending_permission_requests(request):
             return Response({"count": 0, "requests": []}, status=status.HTTP_200_OK)
 
         dept_param = request.GET.get('department')
-        if (is_hod or is_incharge) and dept_param and dept_param != 'All':
+        if (is_hod or is_incharge or is_avp) and dept_param and dept_param != 'All':
             if not hod_assigned_depts:
                 hod_assigned_depts = [dept_param]
             elif dept_param not in hod_assigned_depts:
@@ -397,7 +419,7 @@ def get_pending_permission_requests(request):
                 elif is_hod and not is_avp:
                     query["status"] = {"$in": ["Pending HOD", "Pending"]}
                 elif is_avp:
-                    query["status"] = {"$in": ["Pending AVP", "Pending"]}
+                    query["status"] = {"$in": ["Pending AVP", "Pending HOD", "Pending"]}
                 else:
                     query["status"] = {"$in": ["Pending", "Pending Incharge", "Pending HOD", "Pending AVP"]}
             else:
@@ -412,22 +434,24 @@ def get_pending_permission_requests(request):
             elif is_hod and not is_avp:
                 query["status"] = {"$in": ["Pending HOD", "Pending"]}
             elif is_avp:
-                query["status"] = {"$in": ["Pending AVP", "Pending"]}
+                query["status"] = {"$in": ["Pending AVP", "Pending HOD", "Pending"]}
             else:
                 query["status"] = {"$in": ["Pending", "Pending Incharge", "Pending HOD", "Pending AVP"]}
 
-        if is_avp or is_admin:
-            # AVP / Admin: Can view all departments
-            pass
-        elif is_hod or is_incharge:
-            if not hod_assigned_depts:
-                return Response({"count": 0, "requests": []}, status=status.HTTP_200_OK)
+        target_depts_to_filter = []
+        if (is_hod or is_incharge or is_avp) and hod_assigned_depts:
+            target_depts_to_filter = list(hod_assigned_depts)
+        elif is_admin and dept_param and dept_param != 'All':
+            target_depts_to_filter = [dept_param]
+        elif (is_hod or is_incharge) and not hod_assigned_depts:
+            return Response({"count": 0, "requests": []}, status=status.HTTP_200_OK)
 
+        if target_depts_to_filter:
             import re
             dept_map, _, _ = get_cached_reference_maps()
             reverse_dept_map = {str(v).lower(): k for k, v in dept_map.items()}
             all_match_terms = set()
-            resolved_info = resolve_department_filter(",".join(hod_assigned_depts))
+            resolved_info = resolve_department_filter(",".join(target_depts_to_filter))
             target_terms = resolved_info.get('target_terms', [])
             for t in target_terms:
                 all_match_terms.add(t)
@@ -436,7 +460,7 @@ def get_pending_permission_requests(request):
                 code = reverse_dept_map.get(str(t).lower())
                 if code:
                     all_match_terms.add(code)
-            for d in hod_assigned_depts:
+            for d in target_depts_to_filter:
                 code = reverse_dept_map.get(str(d).lower())
                 if code:
                     all_match_terms.add(code)
@@ -454,7 +478,7 @@ def get_pending_permission_requests(request):
             else:
                 query["$or"] = dept_condition
 
-        if (is_hod or is_incharge) and caller_id:
+        if (is_hod or is_incharge or is_avp) and caller_id:
             query["employee_id"] = {"$ne": str(caller_id).strip()}
 
         cursor = list(requests_col.find(query).sort("applied_on_ts", -1))
@@ -584,11 +608,35 @@ def review_permission_request(request):
             update_fields["admin_remarks"] = admin_remarks
 
             if new_status == 'Approved':
-                resulting_status = 'Pending HOD'
+                # Check if department has HOD; if no HOD exists, forward directly to AVP
+                req_dept = perm_req.get('department_code') or perm_req.get('department')
+                has_hod = False
+                if req_dept:
+                    from employees.views.common.utils import resolve_department_filter
+                    from django.db.models import Q
+                    resolved_info = resolve_department_filter(req_dept)
+                    target_terms = resolved_info.get('target_terms', set()) or {req_dept}
+                    q_dept = Q()
+                    for t in target_terms:
+                        if t:
+                            q_dept |= Q(department__icontains=t) | Q(assigned_departments__icontains=t)
+                    hod_users = list(Register.objects.filter(
+                        Q(role__in=['HR-R-HOD', 'HOD']) | Q(role__icontains='HOD'),
+                        q_dept
+                    ))
+                    has_hod = any('AVP' not in (u.role or '').upper() for u in hod_users)
+
+                if has_hod:
+                    resulting_status = 'Pending HOD'
+                    action_msg = f"Permission recommended by Incharge {reviewer_name} and forwarded to HOD."
+                    notif_title = "Permission Recommended ⏱️"
+                    notif_msg = f"Your 1-hour permission request for {date_str} ({session_str}) has been recommended by Incharge {reviewer_name} and forwarded to HOD for final approval."
+                else:
+                    resulting_status = 'Pending AVP'
+                    action_msg = f"Permission recommended by Incharge {reviewer_name} and forwarded to AVP."
+                    notif_title = "Permission Recommended ⏱️"
+                    notif_msg = f"Your 1-hour permission request for {date_str} ({session_str}) has been recommended by Incharge {reviewer_name} and forwarded to AVP for final approval."
                 update_fields["status"] = resulting_status
-                action_msg = f"Permission recommended by Incharge {reviewer_name} and forwarded to HOD."
-                notif_title = "Permission Recommended ⏱️"
-                notif_msg = f"Your 1-hour permission request for {date_str} ({session_str}) has been recommended by Incharge {reviewer_name} and forwarded to HOD for final approval."
             else:
                 resulting_status = 'Rejected'
                 update_fields["status"] = resulting_status

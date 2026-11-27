@@ -30,6 +30,7 @@ from .profile_views import (
 )
 from .hierarchy_views import (
     get_approver_hierarchy,
+    get_approver_hierarchy_staff,
 )
 
 

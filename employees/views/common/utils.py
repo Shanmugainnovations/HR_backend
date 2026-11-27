@@ -483,8 +483,23 @@ def get_request_user_approval_context(request):
         ''
     ).strip().upper()
 
+    HR_ADMIN_ROLES = {'SD-R-HR', 'HR-ADMIN', 'ADMIN'}
+    HR_AVP_ROLES = {'HR-R-AVP', 'AVP'}
+    HR_HOD_ROLES = {'HR-R-HOD', 'HOD'}
+    HR_INC_ROLES = {'HR-R-INC', 'INCHARGE', 'INC'}
+
     user = None
     role_str = role_header
+    token_actions = []
+    auth_header = request.headers.get('Authorization') or request.META.get('HTTP_AUTHORIZATION')
+    if auth_header:
+        from employees.token_utils import decode_employee_token
+        payload = decode_employee_token(auth_header)
+        if payload:
+            raw_actions = payload.get('allowed-actions') or payload.get('allowed_actions') or []
+            if isinstance(raw_actions, list):
+                token_actions = [str(a).strip().upper() for a in raw_actions if a]
+
     if auth_user_id:
         user = Register.objects.filter(
             Q(employee_id=str(auth_user_id).strip()) | Q(name=str(auth_user_id).strip())
@@ -492,10 +507,23 @@ def get_request_user_approval_context(request):
         if user and user.role:
             role_str = str(user.role).strip().upper()
 
-    is_avp = 'AVP' in role_str or 'HR-R-AVP' in role_str
-    is_hod = ('HOD' in role_str or 'HR-R-HOD' in role_str) and not is_avp
-    is_incharge = ('INCHARGE' in role_str or 'HR-R-INC' in role_str or role_str.endswith('-INC')) and not is_avp and not is_hod
-    is_admin = ('ADMIN' in role_str or role_str in ['HR', 'HR-ADMIN', 'SD-R-HR']) and not (is_avp or is_hod or is_incharge)
+    # If token carries explicit Global allowed-actions, strictly honor HR action codes
+    if token_actions:
+        if 'SD-R-HR' in token_actions:
+            is_avp, is_hod, is_incharge, is_admin = False, False, False, True
+        elif 'HR-R-AVP' in token_actions:
+            is_avp, is_hod, is_incharge, is_admin = True, False, False, False
+        elif 'HR-R-HOD' in token_actions:
+            is_avp, is_hod, is_incharge, is_admin = False, True, False, False
+        elif 'HR-R-INC' in token_actions:
+            is_avp, is_hod, is_incharge, is_admin = False, False, True, False
+        else:
+            is_avp, is_hod, is_incharge, is_admin = False, False, False, False
+    else:
+        is_avp = role_str in HR_AVP_ROLES
+        is_hod = role_str in HR_HOD_ROLES and not is_avp
+        is_incharge = role_str in HR_INC_ROLES and not is_avp and not is_hod
+        is_admin = role_str in HR_ADMIN_ROLES and not (is_avp or is_hod or is_incharge)
 
     assigned_names = []
     if user:
@@ -523,26 +551,38 @@ def get_request_user_approval_context(request):
     }
 
 
+def _is_payload_hr_admin(payload):
+    """Strictly checks whether a decoded JWT payload represents an HR Admin (SD-R-HR)."""
+    if not payload or not isinstance(payload, dict):
+        return None
+    actions = payload.get('allowed-actions') or payload.get('allowed_actions') or []
+    if isinstance(actions, list) and actions:
+        norm_actions = {str(a).strip().upper() for a in actions if a}
+        return 'SD-R-HR' in norm_actions
+    role = str(payload.get('role') or payload.get('primaryRole') or '').strip().upper()
+    if role:
+        return role in {'SD-R-HR', 'HR-ADMIN', 'ADMIN'}
+    return None
+
+
 def is_admin_user(request):
     """
-    Returns True if the request is made by an Admin / HR user.
-    Returns False if the request is made by an AVP, HOD, Incharge, or regular employee.
+    Returns True if the request is made by an HR Admin user (strictly SD-R-HR / HR-ADMIN / normalized Admin).
+    Returns False for non-HR module admins (e.g. SD-R-ADMIN, MDC-R-ADM, SIN-R-ADM, ST-R-A),
+    AVP, HOD, Incharge, or regular employees (including HR-R-EMP).
     Supports JWT tokens and auth headers passed via query parameters (for browser window.open file downloads).
     """
+    HR_ADMIN_ROLES = {'SD-R-HR', 'HR-ADMIN', 'ADMIN'}
+    HR_SUPERVISOR_ROLES = {'HR-R-AVP', 'AVP', 'HR-R-HOD', 'HOD', 'HR-R-INC', 'INCHARGE', 'INC'}
+
     # Check token from GET parameter if header is missing
     token = request.GET.get('token') or request.GET.get('auth_token') or request.GET.get('jwt')
     if token:
         from employees.token_utils import decode_employee_token
         payload = decode_employee_token(token)
-        if payload:
-            role = str(payload.get('role') or payload.get('primaryRole') or '').upper()
-            actions = payload.get('allowed-actions') or payload.get('allowed_actions') or []
-            if 'ADMIN' in role or 'HR' in role or 'SD-R-HR' in actions or 'SD-R-ADMIN' in actions:
-                return True
-            if 'HOD' in role or any('HOD' in str(a).upper() for a in actions):
-                return False
-            if role and 'ADMIN' not in role and 'HR' not in role:
-                return False
+        token_result = _is_payload_hr_admin(payload)
+        if token_result is not None:
+            return token_result
 
     ctx = get_request_user_approval_context(request)
     if ctx['is_avp'] or ctx['is_hod'] or ctx['is_incharge']:
@@ -566,22 +606,16 @@ def is_admin_user(request):
         ''
     ).strip().upper()
 
-    if 'HOD' in role_val and 'ADMIN' not in role_val:
+    if role_val in HR_SUPERVISOR_ROLES:
         return False
 
     auth_header = request.headers.get('Authorization') or request.META.get('HTTP_AUTHORIZATION')
     if auth_header:
         from employees.token_utils import decode_employee_token
         payload = decode_employee_token(auth_header)
-        if payload:
-            role = str(payload.get('role') or payload.get('primaryRole') or '').upper()
-            actions = payload.get('allowed-actions') or payload.get('allowed_actions') or []
-            if 'ADMIN' in role or 'HR' in role or 'SD-R-HR' in actions or 'SD-R-ADMIN' in actions:
-                return True
-            if 'HOD' in role or any('HOD' in str(a).upper() for a in actions):
-                return False
-            if role and 'ADMIN' not in role and 'HR' not in role:
-                return False
+        header_result = _is_payload_hr_admin(payload)
+        if header_result is not None:
+            return header_result
 
     auth_user_id = (
         request.headers.get('auth-user-id') or
@@ -597,12 +631,10 @@ def is_admin_user(request):
         from employees.models import Register
         user = Register.objects.filter(employee_id=str(auth_user_id).strip()).first()
         if user:
-            reg_role = str(user.role or '').upper()
-            if 'ADMIN' in reg_role or 'HR' in reg_role:
-                return True
-            return False
+            reg_role = str(user.role or '').strip().upper()
+            return reg_role in HR_ADMIN_ROLES
 
-    if 'ADMIN' in role_val or 'HR' in role_val:
+    if role_val in HR_ADMIN_ROLES:
         return True
 
     return False
