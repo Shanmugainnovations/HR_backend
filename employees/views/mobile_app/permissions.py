@@ -127,15 +127,32 @@ def submit_permission_request(request):
         employee_name = profile.get('employeeName') or data.get('employee_name') or employee_id
         raw_dept = profile.get('department') or data.get('department') or ''
 
+        from employees.views.common.utils import resolve_department_filter, get_request_user_approval_context
+
+        ctx = get_request_user_approval_context(request)
         dept_name = resolve_department_names(raw_dept) if raw_dept else ""
-        requester_role = ""
+        requester_role = str(ctx.get('role_str') or '').strip().upper()
         reg = Register.objects.filter(employee_id=str(employee_id).strip()).first()
         if reg:
             if not dept_name or dept_name == "Unassigned":
                 if reg.department:
                     dept_name = resolve_department_names(reg.department)
-            if reg.role:
+            if not requester_role and reg.role:
                 requester_role = str(reg.role).strip().upper()
+
+        if not requester_role:
+            p_roles = [str(profile.get('primaryRole') or '').strip().upper()]
+            add_r = profile.get('additionalRoles')
+            if isinstance(add_r, list):
+                p_roles.extend([str(r).strip().upper() for r in add_r if r])
+            elif add_r:
+                p_roles.append(str(add_r).strip().upper())
+            if 'HR-R-AVP' in p_roles:
+                requester_role = 'HR-R-AVP'
+            elif 'HR-R-HOD' in p_roles:
+                requester_role = 'HR-R-HOD'
+            elif 'HR-R-INC' in p_roles:
+                requester_role = 'HR-R-INC'
 
         if not dept_name or dept_name == "Unassigned":
             dept_name = raw_dept if (raw_dept and not str(raw_dept).upper().startswith("DEPT")) else "General"
@@ -143,7 +160,6 @@ def submit_permission_request(request):
         # Determine 3-tier initial status (Incharge -> HOD -> AVP)
         # If department has no Incharge and no HOD, route directly to AVP
         from django.db.models import Q
-        from employees.views.common.utils import resolve_department_filter
 
         has_incharge = False
         has_hod = False
@@ -160,21 +176,24 @@ def submit_permission_request(request):
                 q_dept |= Q(employee_id__in=matching_emp_ids)
 
             inc_users = list(Register.objects.filter(
-                Q(role__in=['HR-R-INC', 'Incharge', 'INCHARGE']) | Q(role__icontains='INCHARGE') | Q(role__icontains='HR-R-INC') | Q(role__endswith='-INC'),
+                Q(role__in=['HR-R-INC', 'Incharge', 'INCHARGE']),
                 q_dept
             ))
-            has_incharge = any('AVP' not in (u.role or '').upper() and 'HOD' not in (u.role or '').upper() for u in inc_users)
+            has_incharge = len(inc_users) > 0
 
             hod_users = list(Register.objects.filter(
-                Q(role__in=['HR-R-HOD', 'HOD']) | Q(role__icontains='HOD'),
+                Q(role__in=['HR-R-HOD', 'HOD']),
                 q_dept
             ))
-            has_hod = any('AVP' not in (u.role or '').upper() for u in hod_users)
+            has_hod = len(hod_users) > 0
 
-        if 'HOD' in requester_role or 'HR-R-HOD' in requester_role:
+        is_req_hod = ctx.get('is_hod') or requester_role in {'HR-R-HOD', 'HOD'}
+        is_req_inc = ctx.get('is_incharge') or requester_role in {'HR-R-INC', 'INCHARGE', 'INC'}
+
+        if is_req_hod:
             initial_status = 'Pending AVP'
             target_reviewer = 'AVP/HR'
-        elif 'INCHARGE' in requester_role or 'HR-R-INC' in requester_role or requester_role.endswith('-INC'):
+        elif is_req_inc:
             initial_status = 'Pending HOD' if has_hod else 'Pending AVP'
             target_reviewer = 'HOD' if has_hod else 'AVP'
         else:

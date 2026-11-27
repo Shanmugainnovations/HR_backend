@@ -153,10 +153,10 @@ def apply_leave(request):
             ))
             has_hod = any('AVP' not in (u.role or '').upper() for u in hod_users)
 
-        if 'HOD' in requester_role:
+        if ctx.get('is_hod') or requester_role in {'HR-R-HOD', 'HOD'}:
             # 1. HOD applies -> Routes directly to Top Management (AVP)!
             initial_status = 'Pending AVP'
-        elif 'INCHARGE' in requester_role or 'HR-R-INC' in requester_role or requester_role.endswith('-INC'):
+        elif ctx.get('is_incharge') or requester_role in {'HR-R-INC', 'INCHARGE', 'INC'}:
             # 2. Incharge applies -> Routes directly to HOD (or AVP if no HOD)!
             initial_status = 'Pending HOD' if has_hod else 'Pending AVP'
         else:
